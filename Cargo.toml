@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "elgate-core",
+]
+
+# Remove workspace.package section that's causing issues
+# and define everything directly in the elgate-core/Cargo.toml
+
+[workspace.dependencies]
+# Main tokio crate with standard features
+tokio = { version = "1.32", features = ["full"] }
+# Tokio-uring for Linux-specific io_uring functionality
+tokio-uring = "0.4"
+num_cpus = "1.16"
+sysinfo = "0.29"
+core_affinity = "0.8"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"

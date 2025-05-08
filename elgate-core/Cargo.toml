@@ -1,0 +1,22 @@
+[package]
+name = "elgate-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Prasanth Vemula <vpk11@iitbbs.ac.in>"]
+license = "MIT"
+
+[features]
+# Enable Linux-specific io_uring features
+io_uring = ["tokio-uring"]
+
+[dependencies]
+tokio = { workspace = true }
+# Only included when the io_uring feature is enabled
+tokio-uring = { workspace = true, optional = true }
+num_cpus = { workspace = true }
+sysinfo = { workspace = true }
+core_affinity = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

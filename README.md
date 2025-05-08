@@ -52,3 +52,76 @@ Elgate allows you to:
 - Detects CPU cores and NUMA nodes
 - Switches between single-threaded and sharded-worker mode
 - Core pinning for cache-local execution
+
+---
+
+## Getting Started
+
+Elgate is currently in early development. Check back soon for installation and usage instructions.
+
+## Development
+
+### Requirements
+
+- Rust 1.86.0 or later
+- **Linux** kernel 5.10+ (5.11+ recommended for best performance)
+- CMake (for some dependencies)
+- Docker (for development on non-Linux platforms)
+
+**Note**: This project uses Linux-specific features (io_uring, NUMA topology, etc.) and cannot run natively on macOS or Windows.
+
+### Development Environments
+
+#### Native Linux Development
+
+If you're on Linux, you can build directly:
+
+```bash
+# Build with io_uring support
+cargo build --features io_uring
+
+# Run tests
+cargo test --features io_uring
+```
+
+#### Docker Development (for macOS/Windows)
+
+We provide a Docker environment for development on non-Linux platforms:
+
+```bash
+# Build the Docker image (first time only)
+docker-compose build
+
+# Interactive development shell
+docker-compose run --rm elgate-dev
+
+# Inside the container:
+cargo build --features io_uring
+cargo test --features io_uring
+```
+
+For one-off commands:
+
+```bash
+# Build the project
+docker-compose run --rm elgate-dev cargo build --features io_uring
+
+# Run tests
+docker-compose run --rm elgate-dev cargo test --features io_uring
+```
+
+### Project Structure
+
+```
+elgate/
+├── .github/workflows/  # CI configuration
+├── docs/rfcs/          # Architecture specifications
+├── elgate-core/        # Core library code
+├── Dockerfile          # Development container
+├── docker-compose.yml  # Container orchestration
+└── ...
+```
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  elgate-dev:
+    build:
+      context: .
+      args:
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+    volumes:
+      - .:/code
+      - cargo-cache:/home/developer/.cargo/registry
+    environment:
+      - RUST_BACKTRACE=1
+    command: bash
+
+volumes:
+  cargo-cache: 

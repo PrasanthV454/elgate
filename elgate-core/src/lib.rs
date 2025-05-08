@@ -1,0 +1,52 @@
+//! Elgate Core - High-performance I/O routing system
+//! 
+//! This library provides the core functionality for the Elgate system.
+
+/// Architecture detection and thread management
+pub mod arch {
+    // To be implemented
+}
+
+/// Shared memory ring buffer
+pub mod ring {
+    // To be implemented
+}
+
+/// Write-ahead logging
+pub mod wal {
+    // To be implemented
+}
+
+/// Disk I/O engine
+pub mod disk {
+    #[cfg(feature = "io_uring")]
+    pub mod io_uring {
+        // io_uring implementation (Linux only)
+    }
+
+    #[cfg(not(feature = "io_uring"))]
+    pub mod fallback {
+        // Standard file I/O fallback (cross-platform)
+    }
+}
+
+/// Network I/O engine
+pub mod net {
+    #[cfg(feature = "io_uring")]
+    pub mod io_uring {
+        // io_uring implementation (Linux only)
+    }
+
+    #[cfg(not(feature = "io_uring"))]
+    pub mod fallback {
+        // Standard socket I/O fallback (cross-platform)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        assert_eq!(2 + 2, 4);
+    }
+}
