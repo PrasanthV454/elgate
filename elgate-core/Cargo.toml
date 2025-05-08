@@ -21,6 +21,18 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# New dependencies for shared memory ring buffer
+memmap2 = "0.5"         # For memory mapping
+libc = "0.2"            # For low-level system calls
+nix = "0.26"            # For futex operations
+crossbeam-utils = "0.8" # For atomic operations
+dashmap = "5.4"         # For concurrent maps
+uuid = { version = "1.3", features = ["v4", "serde"] }
+
 [[example]]
 name = "cpu_info"
 path = "examples/cpu_info.rs"
+
+[[example]]
+name = "ring_buffer"
+path = "examples/ring_buffer.rs"

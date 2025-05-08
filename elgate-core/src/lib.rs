@@ -6,9 +6,7 @@
 pub mod arch;
 
 /// Shared memory ring buffer
-pub mod ring {
-    // To be implemented
-}
+pub mod ring;
 
 /// Write-ahead logging
 pub mod wal {
