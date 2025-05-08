@@ -3,9 +3,7 @@
 //! This library provides the core functionality for the Elgate system.
 
 /// Architecture detection and thread management
-pub mod arch {
-    // To be implemented
-}
+pub mod arch;
 
 /// Shared memory ring buffer
 pub mod ring {

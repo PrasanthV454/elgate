@@ -20,3 +20,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[[example]]
+name = "cpu_info"
+path = "examples/cpu_info.rs"

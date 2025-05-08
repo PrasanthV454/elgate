@@ -13,6 +13,8 @@ services:
     environment:
       - RUST_BACKTRACE=1
     command: bash
+    cpus: 2.0       # Use up to 2 CPU cores
+    cpu_count: 2    # Expose 2 CPU cores to the container
 
 volumes:
   cargo-cache: 
