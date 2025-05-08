@@ -1,5 +1,5 @@
 # 🗺️ Elgate – Implementation Roadmap
-Maintainer (solo dev) • Legend → `[ ]` todo  `[x]` done  
+`[ ]` todo  `[x]` done  
 
 ---
 
