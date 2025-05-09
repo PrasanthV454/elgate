@@ -15,7 +15,7 @@ fn main() {
     println!("NUMA available: {}", cpu_info.is_numa_available());
 
     // Print details of each NUMA node
-    for (_i, node) in cpu_info.numa_nodes().iter().enumerate() {
+    for node in cpu_info.numa_nodes().iter() {
         println!(
             "NUMA Node {}: {} cores ({:?})",
             node.id,

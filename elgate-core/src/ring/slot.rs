@@ -257,6 +257,7 @@ impl Slot {
     /// This function is unsafe because it creates a mutable slice from a raw pointer.
     /// The caller must ensure that the pointer is valid, the memory region is of
     /// sufficient size, and no other references to the memory exist.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn data_slice_mut(&self, len: usize) -> &mut [u8] {
         std::slice::from_raw_parts_mut(self.data, len)
     }

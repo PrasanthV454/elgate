@@ -4,7 +4,9 @@
 //! and network I/O components.
 
 use elgate_core::arch::cpu_info::CpuInfo;
+#[cfg(feature = "io_uring")]
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
+#[cfg(feature = "io_uring")]
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{self, OperationKind, RingBufferOptions};
 
@@ -83,14 +85,9 @@ async fn benchmark_ring_buffer() {
 }
 
 // Benchmark the disk I/O performance
+#[cfg(feature = "io_uring")]
 async fn benchmark_disk_io() {
     println!("\n=== Disk I/O Performance ===");
-
-    // Skip if io_uring feature is not enabled
-    if !cfg!(feature = "io_uring") {
-        println!("Skipping disk I/O benchmark (io_uring feature not enabled)");
-        return;
-    }
 
     // Create paths for testing
     let ring_path = "/tmp/elgate_bench_disk_ring";
@@ -170,6 +167,11 @@ async fn benchmark_disk_io() {
     // Clean up
     let _ = fs::remove_file(ring_path);
     let _ = fs::remove_file(test_file_path);
+}
+
+#[cfg(not(feature = "io_uring"))]
+async fn benchmark_disk_io() {
+    println!("Disk I/O benchmark skipped: io_uring feature not enabled");
 }
 
 // Benchmark the network I/O performance

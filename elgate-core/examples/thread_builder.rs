@@ -4,14 +4,10 @@
 //! creating CPU and NUMA-aware threads.
 
 use elgate_core::arch::cpu_info::CpuInfo;
-use elgate_core::arch::thread_builder::{PinningResult, ThreadBuilder};
+use elgate_core::arch::thread_builder::ThreadBuilder;
 use elgate_core::arch::RuntimeMode;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
     // Detect CPU topology
@@ -58,11 +54,7 @@ fn main() -> anyhow::Result<()> {
         println!("Computed sum {} in {:?}", sum, duration);
 
         // Print pinning information
-        if let Some(core_id) = thread::current().name().and_then(|_| {
-            // We can't directly get the core ID in portable code
-            // This is just a placeholder for an OS-specific solution
-            None::<usize>
-        }) {
+        if let Some(core_id) = thread::current().name().and(None::<usize>) {
             println!("Thread is running on CPU {}", core_id);
         } else {
             println!("Could not determine current core ID");

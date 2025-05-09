@@ -133,6 +133,7 @@ impl CpuInfo {
 
     // Linux-specific NUMA detection
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)]
     fn detect_numa_linux() -> Result<Vec<NumaNode>, std::io::Error> {
         use std::fs;
         use std::path::Path;
@@ -178,11 +179,13 @@ impl CpuInfo {
 
     // Non-Linux platforms: stub implementation
     #[cfg(not(target_os = "linux"))]
+    #[allow(dead_code)]
     fn detect_numa_linux() -> Result<Vec<NumaNode>, std::io::Error> {
         Ok(vec![])
     }
 
     /// Parse a CPU list string like "0-2,4,6-8" into a vector of core IDs
+    #[allow(dead_code)]
     fn parse_cpu_list(cpulist: &str) -> Vec<usize> {
         let mut cores = Vec::new();
 

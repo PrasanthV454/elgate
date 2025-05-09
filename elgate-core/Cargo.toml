@@ -8,6 +8,7 @@ license = "MIT"
 [features]
 # Enable Linux-specific io_uring features
 io_uring = ["tokio-uring"]
+numa = []
 
 [dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -46,14 +47,17 @@ path = "examples/ring_buffer.rs"
 [[example]]
 name = "perf_benchmark"
 path = "examples/perf_benchmark.rs"
+required-features = ["io_uring"]
 
 [[example]]
 name = "disk_io"
 path = "examples/disk_io.rs"
+required-features = ["io_uring"]
 
 [[example]]
 name = "network_io"
 path = "examples/network_io.rs"
+required-features = ["io_uring"]
 
 [[example]]
 name = "thread_builder"
@@ -66,3 +70,4 @@ path = "examples/numa_ring_buffer.rs"
 [[example]]
 name = "error_handling"
 path = "examples/error_handling.rs"
+required-features = ["io_uring"]

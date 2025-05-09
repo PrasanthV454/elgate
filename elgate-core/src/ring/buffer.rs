@@ -80,6 +80,7 @@ impl RingBuffer {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .mode(0o666) // Readable/writable by all users
             .open(&options.path)
             .context("Failed to create/open shared memory file")?;
@@ -404,6 +405,7 @@ impl RingBuffer {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .mode(0o666)
             .open(&options.path)
             .context("Failed to create/open shared memory file")?;
@@ -646,7 +648,7 @@ mod tests {
         assert_eq!(ring.active_producers(), 1);
 
         // If NUMA is available, check that the NUMA node is set correctly
-        if cpu_info.is_numa_available() && cpu_info.numa_nodes().len() > 0 {
+        if cpu_info.is_numa_available() && !cpu_info.numa_nodes().is_empty() {
             let header = unsafe { &*ring.header };
             assert_eq!(header.numa_node(), 0);
         }

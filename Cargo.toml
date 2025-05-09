@@ -2,6 +2,7 @@
 members = [
     "elgate-core",
 ]
+resolver = "2"
 
 # Remove workspace.package section that's causing issues
 # and define everything directly in the elgate-core/Cargo.toml
