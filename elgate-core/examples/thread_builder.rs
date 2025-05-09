@@ -8,8 +8,17 @@ use elgate_core::arch::thread_builder::ThreadBuilder;
 use elgate_core::arch::RuntimeMode;
 use std::sync::Arc;
 use std::thread;
+use std::env;
 
 fn main() -> anyhow::Result<()> {
+    // Enable better debug logging
+    if env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "debug");
+    }
+    
+    // Initialize logging
+    tracing_subscriber::fmt::init();
+    
     // Detect CPU topology
     let cpu_info = CpuInfo::detect();
 

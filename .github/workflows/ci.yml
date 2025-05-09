@@ -65,9 +65,40 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y numactl hwloc linux-tools-generic
       
-      - name: Check for NUMA support
+      - name: Check for NUMA support (with detailed logging)
         id: check-numa
         run: |
+          echo "=== NUMA Debugging Information ==="
+          echo "System information:"
+          uname -a
+          
+          echo "\n=== CPU Information ==="
+          lscpu
+          
+          echo "\n=== Memory Information ==="
+          free -h
+          
+          echo "\n=== NUMA Hardware Detection ==="
+          numactl --hardware
+          
+          echo "\n=== NUMA Node Distance ==="
+          if [ -f /sys/devices/system/node/node0/distance ]; then
+            cat /sys/devices/system/node/node*/distance
+          else
+            echo "Node distance information not available"
+          fi
+          
+          echo "\n=== NUMA Available Memory ==="
+          if [ -d /sys/devices/system/node/node0/ ]; then
+            cat /sys/devices/system/node/node*/meminfo
+          else
+            echo "Node memory information not available"
+          fi
+          
+          echo "\n=== Linux Kernel NUMA Support ==="
+          grep NUMA /boot/config-$(uname -r) || echo "NUMA config not found"
+          
+          # Now proceed with actual detection for GitHub Actions
           if numactl --hardware | grep -q "available"; then
             echo "NUMA architecture detected"
             echo "has_numa=true" >> $GITHUB_OUTPUT
@@ -106,19 +137,51 @@ jobs:
           command: test
           args: --verbose
       
+      - name: Run tests with all features
+        run: |
+          echo "=== Testing with All Features Enabled ==="
+          # Test with both NUMA and io_uring features with maximum verbosity
+          RUST_LOG=debug RUST_BACKTRACE=full cargo test --all-features -vv -- --nocapture --test-threads=1 --show-output
+      
+      - name: Run examples with all features
+        run: |
+          # Run key examples with all features
+          cargo run --all-features --example thread_builder
+          # Add other examples that benefit from all features
+      
       - name: Run examples
         uses: actions-rs/cargo@v1
         with:
           command: run
           args: --example thread_builder
       
-      - name: Run NUMA-specific tests
+      - name: Run NUMA-specific tests (with verbose logs)
         if: steps.check-numa.outputs.has_numa == 'true'
         run: |
           echo "Running on a NUMA system with ${{ steps.check-numa.outputs.numa_nodes }} nodes"
-          # Run specific NUMA-aware tests or examples
-          cargo test --features numa
-          cargo run --example thread_builder
+          
+          echo "\n=== Running NUMA Commands Manually ==="
+          numactl --show
+          
+          echo "\n=== Listing NUMA Directories ==="
+          ls -la /sys/devices/system/node/
+          
+          echo "\n=== CPU-to-NUMA Node Mapping ==="
+          for cpu in /sys/devices/system/cpu/cpu*/; do
+            if [ -f "$cpu/node0/cpumap" ]; then
+              echo "$(basename $cpu): $(cat $cpu/node*/cpumap)"
+            else
+              echo "$(basename $cpu): No direct node mapping found"
+            fi
+          done
+          
+          echo "\n=== Starting NUMA Feature Tests ==="
+          # Run with verbose output and print test output even if successful
+          RUST_BACKTRACE=1 cargo test --features numa --verbose -- --nocapture
+          
+          echo "\n=== Starting Thread Builder Example ==="
+          # Run the thread_builder example with debug output
+          RUST_LOG=debug cargo run --example thread_builder
       
       - name: Run io_uring-specific tests
         if: steps.check-io-uring.outputs.has_io_uring == 'true'
