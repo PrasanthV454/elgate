@@ -329,9 +329,14 @@ impl DiskEngine {
     }
 
     /// Writes data to a file at the specified path and offset.
-    pub async fn write_file<P: AsRef<Path>>(&self, path: P, offset: u64, data: Vec<u8>) -> Result<()> {
+    pub async fn write_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        
+
         // Send the operation with a timeout
         let path_buf = path.as_ref().to_path_buf();
         let send_result = tokio::time::timeout(
@@ -344,9 +349,10 @@ impl DiskEngine {
                 callback: Some(Box::new(move |result| {
                     let _ = tx.send(result.map(|_| ()));
                 })),
-            })
-        ).await;
-        
+            }),
+        )
+        .await;
+
         // Handle send timeout
         match send_result {
             Ok(send) => {
