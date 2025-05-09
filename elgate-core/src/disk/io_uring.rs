@@ -478,8 +478,8 @@ mod tests {
             return;
         }
 
-        // Create a proper tokio-uring runtime
-        let rt = tokio_uring::start(async {
+        // Create a proper tokio-uring runtime - this blocks until completion
+        tokio_uring::start(async {
             // Create a ring buffer for communication
             let ring_path = "/tmp/elgate_test_disk_ring_multiple";
             let test_file_path = "/tmp/elgate_test_disk_file_multiple";
@@ -557,9 +557,6 @@ mod tests {
             let _ = std::fs::remove_file(ring_path);
             let _ = std::fs::remove_file(test_file_path);
         });
-
-        // This is crucial - block and wait for test completion
-        rt.unwrap();
     }
 
     #[cfg(test)]
