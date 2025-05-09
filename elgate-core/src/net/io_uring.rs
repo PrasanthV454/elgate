@@ -606,8 +606,35 @@ mod tests {
 
     #[cfg(test)]
     fn has_network_io_uring_permissions() -> bool {
-        // First check basic io_uring permissions
-        let has_basic_io_uring = crate::disk::io_uring::tests::has_full_io_uring_permissions();
+        // Check basic io_uring functionality first
+        let has_device_permissions = std::path::Path::new("/dev/io_uring").exists()
+            && std::fs::metadata("/dev/io_uring")
+                .map(|m| m.permissions().readonly())
+                .unwrap_or(true)
+                == false;
+
+        let has_direct_io = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .custom_flags(libc::O_DIRECT)
+            .open("/tmp/io_uring_test_direct")
+            .map(|_| {
+                let _ = std::fs::remove_file("/tmp/io_uring_test_direct");
+                true
+            })
+            .unwrap_or(false);
+
+        let has_submission_queue_permissions = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("ulimit -l")
+            .output()
+            .map(|o| {
+                let output = String::from_utf8_lossy(&o.stdout);
+                let memlock = output.trim().parse::<u64>().unwrap_or(0);
+                memlock > 1024
+            })
+            .unwrap_or(false);
 
         // Then check network-specific permissions
         let can_bind_to_localhost = std::net::TcpListener::bind("127.0.0.1:0")
@@ -635,7 +662,11 @@ mod tests {
             }
         };
 
-        has_basic_io_uring && can_bind_to_localhost && has_socket_permissions
+        has_device_permissions
+            && has_direct_io
+            && has_submission_queue_permissions
+            && can_bind_to_localhost
+            && has_socket_permissions
     }
 
     #[test]
