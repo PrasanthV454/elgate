@@ -10,11 +10,11 @@ use elgate_core::ring::{self, OperationKind, RingBufferOptions};
 
 use std::fs;
 use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use std::net::{SocketAddr, TcpListener};
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;

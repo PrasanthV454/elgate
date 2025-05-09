@@ -7,9 +7,9 @@ use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::ring::{OperationKind, RingBuffer, RingBufferOptions};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
     // Detect CPU information
@@ -58,7 +58,10 @@ fn main() -> anyhow::Result<()> {
     // Create NUMA-aware ring buffer
     println!("Creating NUMA-aware ring buffer...");
     let numa_node = 0; // Use the first NUMA node
-    let numa_ring = Arc::new(RingBuffer::create_numa_aware(numa_options.clone(), numa_node)?);
+    let numa_ring = Arc::new(RingBuffer::create_numa_aware(
+        numa_options.clone(),
+        numa_node,
+    )?);
 
     println!("Both ring buffers created successfully.");
 
@@ -135,7 +138,10 @@ fn main() -> anyhow::Result<()> {
     let _ = fs::remove_file(numa_path);
 
     let regular_ring = Arc::new(RingBuffer::create(regular_options.clone())?);
-    let numa_ring = Arc::new(RingBuffer::create_numa_aware(numa_options.clone(), numa_node)?);
+    let numa_ring = Arc::new(RingBuffer::create_numa_aware(
+        numa_options.clone(),
+        numa_node,
+    )?);
 
     // Number of producer threads
     let num_producers = 4;
@@ -156,8 +162,7 @@ fn main() -> anyhow::Result<()> {
 
         let handle = thread::spawn(move || {
             for _i in 0..iterations_per_producer {
-                ring.write(OperationKind::DiskWrite, &data)
-                    .unwrap();
+                ring.write(OperationKind::DiskWrite, &data).unwrap();
             }
         });
 
@@ -204,8 +209,7 @@ fn main() -> anyhow::Result<()> {
 
         let handle = thread::spawn(move || {
             for _i in 0..iterations_per_producer {
-                ring.write(OperationKind::DiskWrite, &data)
-                    .unwrap();
+                ring.write(OperationKind::DiskWrite, &data).unwrap();
             }
         });
 
