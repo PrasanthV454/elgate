@@ -15,6 +15,9 @@ use tokio::sync::mpsc;
 #[cfg(feature = "io_uring")]
 use tokio_uring::fs::File as UringFile;
 
+#[cfg(test)]
+use std::os::unix::fs::OpenOptionsExt;
+
 /// Configuration for the disk I/O engine.
 #[derive(Debug, Clone)]
 pub struct DiskConfig {
@@ -326,14 +329,9 @@ impl DiskEngine {
     }
 
     /// Writes data to a file at the specified path and offset.
-    pub async fn write_file<P: AsRef<Path>>(
-        &self,
-        path: P,
-        data: Vec<u8>,
-        offset: u64,
-    ) -> Result<()> {
+    pub async fn write_file<P: AsRef<Path>>(&self, path: P, offset: u64, data: Vec<u8>) -> Result<()> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-
+        
         // Send the operation with a timeout
         let path_buf = path.as_ref().to_path_buf();
         let send_result = tokio::time::timeout(
@@ -346,10 +344,9 @@ impl DiskEngine {
                 callback: Some(Box::new(move |result| {
                     let _ = tx.send(result.map(|_| ()));
                 })),
-            }),
-        )
-        .await;
-
+            })
+        ).await;
+        
         // Handle send timeout
         match send_result {
             Ok(send) => {
@@ -504,7 +501,7 @@ mod tests {
             let offset = i * 100;
             let data = format!("Chunk {}", i).into_bytes();
             disk_engine
-                .write_file(test_file_path, data.as_slice(), offset as u64)
+                .write_file(test_file_path, offset as u64, data)
                 .await
                 .unwrap();
         }
@@ -535,6 +532,7 @@ mod tests {
 
     #[cfg(test)]
     fn has_full_io_uring_permissions() -> bool {
+        // No need to re-import OpenOptionsExt since we added it at the module level
         // Combination of multiple permission checks
         let has_device_permissions = std::path::Path::new("/dev/io_uring").exists()
             && std::fs::metadata("/dev/io_uring")
