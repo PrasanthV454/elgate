@@ -608,16 +608,15 @@ mod tests {
     fn has_network_io_uring_permissions() -> bool {
         // First check basic io_uring permissions
         let has_basic_io_uring = crate::disk::io_uring::tests::has_full_io_uring_permissions();
-
+        
         // Then check network-specific permissions
         let can_bind_to_localhost = std::net::TcpListener::bind("127.0.0.1:0")
             .map(|listener| {
-                // Get the ephemeral port assigned
                 let _ = listener.local_addr();
                 true
             })
             .unwrap_or(false);
-
+        
         // Ensure we can create a socket with the right flags
         let has_socket_permissions = unsafe {
             let sock = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
@@ -635,7 +634,7 @@ mod tests {
                 result
             }
         };
-
+        
         has_basic_io_uring && can_bind_to_localhost && has_socket_permissions
     }
 
@@ -647,27 +646,28 @@ mod tests {
             println!("Skipping io_uring network test - insufficient permissions or support");
             return;
         }
-
+        
         // Use tokio_uring::start for proper context
         tokio_uring::start(async {
             use std::net::SocketAddr;
+            use std::os::unix::io::{AsRawFd, FromRawFd};
             use tokio::sync::oneshot;
-
+            
             // Create a ring buffer for communication
             let ring_path = "/tmp/elgate_test_net_ring";
-
+            
             // Clean up from previous runs
             let _ = std::fs::remove_file(ring_path);
-
+            
             // Create ring buffer with proper options
             let ring_options = crate::ring::RingBufferOptions {
                 path: std::path::PathBuf::from(ring_path),
                 size: 1024 * 1024, // 1 MiB
                 slot_size: 4096,   // 4 KiB
             };
-
+            
             let ring = std::sync::Arc::new(crate::ring::RingBuffer::create(ring_options).unwrap());
-
+            
             // Find an available port
             let server_addr = {
                 let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -675,9 +675,9 @@ mod tests {
                 drop(listener); // Release the port
                 addr
             };
-
+            
             println!("Test using server address: {}", server_addr);
-
+            
             // Create network engine with CI-friendly settings
             let config = super::NetworkConfig {
                 worker_threads: 1,
@@ -686,7 +686,7 @@ mod tests {
                 buffer_size: 4096,
                 numa_node: None,
             };
-
+            
             // Create the engine with proper error handling
             let net_engine = match super::NetworkEngine::new(config, ring.clone()).await {
                 Ok(engine) => engine,
@@ -695,64 +695,87 @@ mod tests {
                     return;
                 }
             };
-
+            
             // Create a channel for server-client synchronization
             let (tx, rx) = oneshot::channel::<()>();
-
-            // Start server
+            
+            // Start server using standard TcpListener
             let server_handle = std::thread::spawn(move || {
                 println!("Server thread starting");
-
+                
                 // Use proper tokio_uring context in the server thread
                 tokio_uring::start(async {
-                    // Start listening with proper error handling
-                    let listener = match net_engine.listen(&server_addr).await {
-                        Ok(l) => {
-                            println!("Server listening on {}", server_addr);
-                            l
-                        }
-                        Err(e) => {
-                            println!("Server listen error: {}", e);
-                            return;
-                        }
-                    };
-
+                    // Create a standard TCP listener
+                    let std_listener = std::net::TcpListener::bind(server_addr).unwrap();
+                    std_listener.set_nonblocking(true).unwrap();
+                    
+                    println!("Server listening on {}", server_addr);
+                    
                     // Signal client that server is ready
                     let _ = tx.send(());
-
-                    // Accept a connection with proper error handling
-                    match listener.accept().await {
-                        Ok(stream) => {
-                            println!(
-                                "Server accepted connection from {}",
-                                stream.peer_addr().unwrap()
-                            );
-
-                            // Echo back data from client
+                    
+                    // Get the raw file descriptor
+                    let listener_fd = std_listener.as_raw_fd();
+                    
+                    // Use the network engine to accept the connection
+                    match net_engine.accept(listener_fd).await {
+                        Ok((client_fd, client_addr)) => {
+                            println!("Server accepted connection from {}", client_addr);
+                            
+                            // We need to create a TcpStream from the raw fd to read/write
+                            let mut stream = unsafe { std::net::TcpStream::from_raw_fd(client_fd) };
+                            stream.set_nonblocking(true).unwrap();
+                            
+                            // Create buffer for reading
                             let mut buffer = [0u8; 128];
-                            match stream.read(&mut buffer).await {
-                                Ok(n) => {
-                                    let data = &buffer[..n];
-                                    println!(
-                                        "Server received {} bytes: {:?}",
-                                        n,
-                                        String::from_utf8_lossy(data)
-                                    );
-
-                                    if let Err(e) = stream.write(data).await {
-                                        println!("Server write error: {}", e);
-                                    } else {
-                                        println!("Server echoed data back to client");
+                            
+                            // Read in a loop with timeout since we're non-blocking
+                            let mut read_bytes = 0;
+                            let start_time = std::time::Instant::now();
+                            
+                            while read_bytes == 0 && start_time.elapsed() < std::time::Duration::from_secs(2) {
+                                match stream.read(&mut buffer) {
+                                    Ok(n) if n > 0 => {
+                                        read_bytes = n;
+                                        let data = &buffer[..n];
+                                        println!(
+                                            "Server received {} bytes: {:?}",
+                                            n,
+                                            String::from_utf8_lossy(data)
+                                        );
+                                        
+                                        // Echo back
+                                        if let Err(e) = stream.write(data) {
+                                            println!("Server write error: {}", e);
+                                        } else {
+                                            println!("Server echoed data back to client");
+                                        }
+                                    }
+                                    Ok(_) => {
+                                        // No data yet, wait a bit
+                                        std::thread::sleep(std::time::Duration::from_millis(50));
+                                    }
+                                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        // Would block, wait a bit
+                                        std::thread::sleep(std::time::Duration::from_millis(50));
+                                    }
+                                    Err(e) => {
+                                        println!("Server read error: {}", e);
+                                        break;
                                     }
                                 }
-                                Err(e) => println!("Server read error: {}", e),
                             }
+                            
+                            // Let engine close the socket 
+                            let _ = net_engine.close(client_fd).await;
                         }
                         Err(e) => println!("Server accept error: {}", e),
                     }
+                    
+                    // Don't explicitly close the listener - it will be closed when dropped
                 });
             });
-
+            
             // Wait for server to start
             println!("Waiting for server to initialize...");
             match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
@@ -763,48 +786,74 @@ mod tests {
                     return;
                 }
             }
-
+            
             // Add a small delay for stability
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
+            
             // Client test
             println!("Client connecting to {}", server_addr);
-            match net_engine.connect(&server_addr).await {
-                Ok(mut stream) => {
-                    println!("Client connected to {}", server_addr);
-
-                    // Send test data with proper error handling
+            match net_engine.connect(server_addr).await {
+                Ok(client_fd) => {
+                    println!("Client connected, fd={}", client_fd);
+                    
+                    // Create a proper stream from the raw fd
+                    let mut stream = unsafe { std::net::TcpStream::from_raw_fd(client_fd) };
+                    stream.set_nonblocking(true).unwrap();
+                    
+                    // Send test data
                     let test_message = b"Hello from io_uring client!";
-                    match stream.write(test_message).await {
+                    match stream.write(test_message) {
                         Ok(_) => println!("Client sent message"),
                         Err(e) => {
                             println!("Client write error: {}", e);
-                            let _ = server_handle.join();
                             return;
                         }
                     }
-
+                    
                     // Read the echoed response
                     let mut buffer = [0u8; 128];
-                    match stream.read(&mut buffer).await {
-                        Ok(n) => {
-                            let received = &buffer[..n];
-                            println!(
-                                "Client received {} bytes: {:?}",
-                                n,
-                                String::from_utf8_lossy(received)
-                            );
-                            assert_eq!(received, test_message);
+                    let mut read_bytes = 0;
+                    let start_time = std::time::Instant::now();
+                    
+                    while read_bytes == 0 && start_time.elapsed() < std::time::Duration::from_secs(2) {
+                        match stream.read(&mut buffer) {
+                            Ok(n) if n > 0 => {
+                                read_bytes = n;
+                                let received = &buffer[..n];
+                                println!(
+                                    "Client received {} bytes: {:?}",
+                                    n,
+                                    String::from_utf8_lossy(received)
+                                );
+                                assert_eq!(received, test_message);
+                                break;
+                            }
+                            Ok(_) => {
+                                // No data yet, wait a bit
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                // Would block, wait a bit
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            Err(e) => {
+                                println!("Client read error: {}", e);
+                                break;
+                            }
                         }
-                        Err(e) => println!("Client read error: {}", e),
                     }
+                    
+                    // Let engine close the socket
+                    let _ = net_engine.close(client_fd).await;
                 }
                 Err(e) => println!("Client connection error: {}", e),
             }
-
+            
+            // Wait for server to complete
+            let _ = server_handle.join();
+            
             // Clean up
             let _ = std::fs::remove_file(ring_path);
-            let _ = server_handle.join();
         });
     }
 }
