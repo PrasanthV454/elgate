@@ -678,7 +678,7 @@ mod tests {
 
             println!("Test using server address: {}", server_addr);
 
-            // Create network engine with CI-friendly settings
+            // Create CI-friendly settings
             let config = super::NetworkConfig {
                 worker_threads: 1,
                 pin_threads: false,
@@ -687,11 +687,20 @@ mod tests {
                 numa_node: None,
             };
 
-            // Create the engine with proper error handling
-            let net_engine = match super::NetworkEngine::new(config, ring.clone()).await {
+            // Create two separate network engines - one for server, one for client
+            let server_engine = match super::NetworkEngine::new(config.clone(), ring.clone()).await
+            {
                 Ok(engine) => engine,
                 Err(e) => {
-                    println!("Failed to create io_uring network engine: {}", e);
+                    println!("Failed to create server io_uring network engine: {}", e);
+                    return;
+                }
+            };
+
+            let client_engine = match super::NetworkEngine::new(config, ring.clone()).await {
+                Ok(engine) => engine,
+                Err(e) => {
+                    println!("Failed to create client io_uring network engine: {}", e);
                     return;
                 }
             };
@@ -699,11 +708,10 @@ mod tests {
             // Create a channel for server-client synchronization
             let (tx, rx) = oneshot::channel::<()>();
 
-            // Start server using standard TcpListener
+            // Start server in a separate thread
             let server_handle = std::thread::spawn(move || {
                 println!("Server thread starting");
 
-                // Use proper tokio_uring context in the server thread
                 tokio_uring::start(async {
                     // Create a standard TCP listener
                     let std_listener = std::net::TcpListener::bind(server_addr).unwrap();
@@ -718,7 +726,7 @@ mod tests {
                     let listener_fd = std_listener.as_raw_fd();
 
                     // Use the network engine to accept the connection
-                    match net_engine.accept(listener_fd).await {
+                    match server_engine.accept(listener_fd).await {
                         Ok((client_fd, client_addr)) => {
                             println!("Server accepted connection from {}", client_addr);
 
@@ -769,12 +777,10 @@ mod tests {
                             }
 
                             // Let engine close the socket
-                            let _ = net_engine.close(client_fd).await;
+                            let _ = server_engine.close(client_fd).await;
                         }
                         Err(e) => println!("Server accept error: {}", e),
                     }
-
-                    // Don't explicitly close the listener - it will be closed when dropped
                 });
             });
 
@@ -792,9 +798,9 @@ mod tests {
             // Add a small delay for stability
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            // Client test
+            // Client test using the client_engine
             println!("Client connecting to {}", server_addr);
-            match net_engine.connect(server_addr).await {
+            match client_engine.connect(server_addr).await {
                 Ok(client_fd) => {
                     println!("Client connected, fd={}", client_fd);
 
@@ -848,7 +854,7 @@ mod tests {
                     }
 
                     // Let engine close the socket
-                    let _ = net_engine.close(client_fd).await;
+                    let _ = client_engine.close(client_fd).await;
                 }
                 Err(e) => println!("Client connection error: {}", e),
             }
