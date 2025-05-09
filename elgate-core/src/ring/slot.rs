@@ -13,16 +13,16 @@ use uuid::Uuid;
 pub enum SlotStatus {
     /// Slot is empty and available for writing.
     Empty = 0,
-    
+
     /// Slot is being written to by a producer.
     Writing = 1,
-    
+
     /// Slot is ready to be read by the consumer.
     Ready = 2,
-    
+
     /// Slot is being read by the consumer.
     Reading = 3,
-    
+
     /// Slot processing is complete and can be reused.
     Complete = 4,
 }
@@ -33,19 +33,19 @@ pub enum SlotStatus {
 pub enum OperationKind {
     /// No operation (empty slot).
     None = 0,
-    
+
     /// Write to disk.
     DiskWrite = 1,
-    
+
     /// Read from disk.
     DiskRead = 2,
-    
+
     /// Send over network.
     NetworkSend = 3,
-    
+
     /// Receive from network.
     NetworkReceive = 4,
-    
+
     /// Custom operation type.
     Custom = 100,
 }
@@ -55,13 +55,13 @@ pub enum OperationKind {
 pub struct Operation {
     /// Kind of operation.
     pub kind: OperationKind,
-    
+
     /// Size of the payload in bytes.
     pub size: usize,
-    
+
     /// Operation ID (UUID).
     pub id: [u8; 16],
-    
+
     /// Timestamp when the operation was created.
     pub timestamp: u64,
 }
@@ -74,19 +74,19 @@ pub struct Operation {
 pub struct SlotMetadata {
     /// Status of the slot.
     pub status: AtomicU32,
-    
+
     /// Kind of operation.
     pub operation: AtomicU32,
-    
+
     /// Size of the payload in bytes.
     pub size: AtomicUsize,
-    
+
     /// Operation ID (UUID).
     pub id: [AtomicU32; 4],
-    
+
     /// Timestamp when the operation was created.
     pub timestamp: AtomicU64,
-    
+
     /// Reserved for future use.
     pub _reserved: [AtomicU32; 2],
 }
@@ -98,10 +98,10 @@ pub struct SlotMetadata {
 pub struct Slot {
     /// Pointer to the slot's metadata.
     pub metadata: *mut SlotMetadata,
-    
+
     /// Pointer to the payload data area.
     pub data: *mut u8,
-    
+
     /// Size of the payload area in bytes.
     pub data_size: usize,
 }
@@ -118,14 +118,14 @@ impl Slot {
         let metadata = ptr as *mut SlotMetadata;
         let data = ptr.add(std::mem::size_of::<SlotMetadata>());
         let data_size = slot_size - std::mem::size_of::<SlotMetadata>();
-        
+
         Self {
             metadata,
             data,
             data_size,
         }
     }
-    
+
     /// Gets the status of the slot.
     pub fn status(&self) -> SlotStatus {
         let status = unsafe { (*self.metadata).status.load(Ordering::Acquire) };
@@ -138,14 +138,16 @@ impl Slot {
             _ => SlotStatus::Empty,
         }
     }
-    
+
     /// Sets the status of the slot.
     pub fn set_status(&self, status: SlotStatus) {
         unsafe {
-            (*self.metadata).status.store(status as u32, Ordering::Release);
+            (*self.metadata)
+                .status
+                .store(status as u32, Ordering::Release);
         }
     }
-    
+
     /// Gets the operation kind of the slot.
     pub fn operation(&self) -> OperationKind {
         let op = unsafe { (*self.metadata).operation.load(Ordering::Acquire) };
@@ -159,26 +161,28 @@ impl Slot {
             _ => OperationKind::None,
         }
     }
-    
+
     /// Sets the operation kind of the slot.
     pub fn set_operation(&self, operation: OperationKind) {
         unsafe {
-            (*self.metadata).operation.store(operation as u32, Ordering::Release);
+            (*self.metadata)
+                .operation
+                .store(operation as u32, Ordering::Release);
         }
     }
-    
+
     /// Gets the size of the payload.
     pub fn size(&self) -> usize {
         unsafe { (*self.metadata).size.load(Ordering::Acquire) }
     }
-    
+
     /// Sets the size of the payload.
     pub fn set_size(&self, size: usize) {
         unsafe {
             (*self.metadata).size.store(size, Ordering::Release);
         }
     }
-    
+
     /// Gets the operation ID as a UUID.
     pub fn id(&self) -> Uuid {
         let parts = unsafe {
@@ -189,35 +193,52 @@ impl Slot {
                 (*self.metadata).id[3].load(Ordering::Acquire),
             ]
         };
-        
-        let bytes = parts.iter().flat_map(|p| p.to_be_bytes()).collect::<Vec<_>>();
+
+        let bytes = parts
+            .iter()
+            .flat_map(|p| p.to_be_bytes())
+            .collect::<Vec<_>>();
         Uuid::from_slice(&bytes).unwrap_or_else(|_| Uuid::nil())
     }
-    
+
     /// Sets the operation ID from a UUID.
     pub fn set_id(&self, id: Uuid) {
         let bytes = id.as_bytes();
-        
+
         unsafe {
-            (*self.metadata).id[0].store(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]), Ordering::Release);
-            (*self.metadata).id[1].store(u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]), Ordering::Release);
-            (*self.metadata).id[2].store(u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]), Ordering::Release);
-            (*self.metadata).id[3].store(u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]), Ordering::Release);
+            (*self.metadata).id[0].store(
+                u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+                Ordering::Release,
+            );
+            (*self.metadata).id[1].store(
+                u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+                Ordering::Release,
+            );
+            (*self.metadata).id[2].store(
+                u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
+                Ordering::Release,
+            );
+            (*self.metadata).id[3].store(
+                u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]),
+                Ordering::Release,
+            );
         }
     }
-    
+
     /// Gets the operation timestamp.
     pub fn timestamp(&self) -> u64 {
         unsafe { (*self.metadata).timestamp.load(Ordering::Acquire) }
     }
-    
+
     /// Sets the operation timestamp.
     pub fn set_timestamp(&self, timestamp: u64) {
         unsafe {
-            (*self.metadata).timestamp.store(timestamp, Ordering::Release);
+            (*self.metadata)
+                .timestamp
+                .store(timestamp, Ordering::Release);
         }
     }
-    
+
     /// Gets the payload data as a slice.
     ///
     /// # Safety
@@ -228,7 +249,7 @@ impl Slot {
     pub unsafe fn data_slice(&self, len: usize) -> &[u8] {
         std::slice::from_raw_parts(self.data, len)
     }
-    
+
     /// Gets the payload data as a mutable slice.
     ///
     /// # Safety
@@ -239,7 +260,7 @@ impl Slot {
     pub unsafe fn data_slice_mut(&self, len: usize) -> &mut [u8] {
         std::slice::from_raw_parts_mut(self.data, len)
     }
-    
+
     /// Writes data to the slot.
     ///
     /// # Safety
@@ -251,22 +272,22 @@ impl Slot {
         if data.len() > self.data_size {
             return Err("Data too large for slot");
         }
-        
+
         self.set_status(SlotStatus::Writing);
         self.set_size(data.len());
         self.set_timestamp(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_secs()
+                .as_secs(),
         );
-        
+
         std::ptr::copy_nonoverlapping(data.as_ptr(), self.data, data.len());
-        
+
         self.set_status(SlotStatus::Ready);
         Ok(())
     }
-    
+
     /// Reads data from the slot.
     ///
     /// # Safety
@@ -278,23 +299,23 @@ impl Slot {
         if self.status() != SlotStatus::Ready {
             return None;
         }
-        
+
         self.set_status(SlotStatus::Reading);
-        
+
         let size = self.size();
         if size > self.data_size {
             self.set_status(SlotStatus::Complete);
             return None;
         }
-        
+
         let mut buffer = vec![0u8; size];
         std::ptr::copy_nonoverlapping(self.data, buffer.as_mut_ptr(), size);
-        
+
         self.set_status(SlotStatus::Complete);
-        
+
         Some(buffer)
     }
-    
+
     /// Resets the slot to empty state.
     pub fn reset(&self) {
         self.set_status(SlotStatus::Empty);
@@ -309,7 +330,7 @@ impl Slot {
 mod tests {
     use super::*;
     use std::alloc::{alloc, Layout};
-    
+
     #[test]
     fn test_slot_operations() {
         // Allocate memory for a slot
@@ -317,47 +338,47 @@ mod tests {
         let layout = Layout::from_size_align(slot_size, 64).unwrap();
         let ptr = unsafe { alloc(layout) };
         assert!(!ptr.is_null());
-        
+
         // Create a slot from the memory
         let slot = unsafe { Slot::from_ptr(ptr, slot_size) };
-        
+
         // Reset the slot
         slot.reset();
-        
+
         // Check initial state
         assert_eq!(slot.status(), SlotStatus::Empty);
         assert_eq!(slot.operation(), OperationKind::None);
         assert_eq!(slot.size(), 0);
         assert_eq!(slot.id(), Uuid::nil());
-        
+
         // Set operation details
         slot.set_operation(OperationKind::DiskWrite);
         let id = Uuid::new_v4();
         slot.set_id(id);
-        
+
         // Check operation details
         assert_eq!(slot.operation(), OperationKind::DiskWrite);
         assert_eq!(slot.id(), id);
-        
+
         // Write data
         let data = b"test data";
         unsafe { slot.write_data(data).unwrap() };
-        
+
         // Check after writing
         assert_eq!(slot.status(), SlotStatus::Ready);
         assert_eq!(slot.size(), data.len());
-        
+
         // Read data
         let read_data = unsafe { slot.read_data() }.unwrap();
-        
+
         // Check after reading
         assert_eq!(read_data, data);
         assert_eq!(slot.status(), SlotStatus::Complete);
-        
+
         // Reset
         slot.reset();
         assert_eq!(slot.status(), SlotStatus::Empty);
-        
+
         // Clean up
         unsafe { std::alloc::dealloc(ptr, layout) };
     }

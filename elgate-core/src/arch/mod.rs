@@ -5,9 +5,9 @@
 //! - Selecting appropriate runtime modes
 //! - Building and pinning worker threads
 
-mod cpu_info;
-mod runtime_mode;
-mod thread_builder;
+pub mod cpu_info;
+pub mod runtime_mode;
+pub mod thread_builder;
 
 pub use cpu_info::{CpuInfo, NumaNode};
 pub use runtime_mode::RuntimeMode;
@@ -44,7 +44,7 @@ mod tests {
         let cpu_info = detect_cpu_topology();
         let mode = select_runtime_mode(&cpu_info);
         println!("Selected runtime mode: {:?}", mode);
-        
+
         // If we have more than one core, we should get PinnedSharded mode
         if cpu_info.logical_cores() > 1 {
             assert!(matches!(mode, RuntimeMode::PinnedSharded { .. }));

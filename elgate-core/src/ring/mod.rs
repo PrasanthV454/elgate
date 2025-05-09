@@ -30,8 +30,7 @@ pub const DEFAULT_SLOT_SIZE: usize = 4 * 1024; // 4 KiB
 /// default settings at the default location.
 pub fn create_ring_buffer() -> Result<RingBuffer> {
     let options = RingBufferOptions::default();
-    RingBuffer::create(options)
-        .context("Failed to create ring buffer with default options")
+    RingBuffer::create(options).context("Failed to create ring buffer with default options")
 }
 
 /// Opens an existing ring buffer with default settings.
@@ -40,8 +39,7 @@ pub fn create_ring_buffer() -> Result<RingBuffer> {
 /// at the default location.
 pub fn open_ring_buffer() -> Result<RingBuffer> {
     let options = RingBufferOptions::default();
-    RingBuffer::open(options)
-        .context("Failed to open ring buffer with default options")
+    RingBuffer::open(options).context("Failed to open ring buffer with default options")
 }
 
 /// Returns the default path for the ring buffer.
@@ -53,37 +51,37 @@ pub fn get_default_ring_path() -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
-    
+
     #[test]
     fn test_create_and_open_ring_buffer() {
         // Use a test-specific path to avoid conflicts
         let test_path = "/tmp/elgate_test_ring";
-        
+
         // Clean up any previous test run
         let _ = fs::remove_file(test_path);
-        
+
         // Create options with test path
         let options = RingBufferOptions {
             path: PathBuf::from(test_path),
             size: DEFAULT_RING_SIZE,
             slot_size: DEFAULT_SLOT_SIZE,
         };
-        
+
         // Create a new ring buffer
         let ring = RingBuffer::create(options.clone()).unwrap();
-        
+
         // Write some data
         let data = b"test data";
         ring.write(OperationKind::DiskWrite, data).unwrap();
-        
+
         // Open the existing ring buffer
         let ring2 = RingBuffer::open(options).unwrap();
-        
+
         // Read the data back
         let (op, read_data) = ring2.read().unwrap().unwrap();
         assert_eq!(op, OperationKind::DiskWrite);
         assert_eq!(read_data, data);
-        
+
         // Clean up
         drop(ring);
         drop(ring2);

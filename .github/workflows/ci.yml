@@ -1,53 +1,128 @@
-name: CI
+name: Elgate CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ master ]
   pull_request:
-    branches: [ main ]
+    branches: [ master ]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build_and_test:
-    name: Build and Test
+  # Standard build and basic tests on regular runners
+  build_and_basic_test:
+    name: Build and Basic Tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - name: Install Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        profile: minimal
-        toolchain: stable
-        override: true
-        components: rustfmt, clippy
+      - uses: actions/checkout@v3
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
 
-    - name: Check format
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --all -- --check
+      - name: Check format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
 
-    - name: Clippy
-      uses: actions-rs/cargo@v1
-      with:
-        command: clippy
-        args: --all-targets -- -D warnings
+      - name: Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all-targets -- -D warnings
 
-    - name: Build
-      uses: actions-rs/cargo@v1
-      with:
-        command: build
-        args: --verbose
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --verbose
 
-    - name: Run tests
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-        args: --verbose
+      - name: Run basic tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --verbose --no-default-features
 
-    - name: Security audit
-      uses: actions-rs/audit-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Security audit
+        uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Advanced tests on larger runners
+  advanced_tests:
+    name: Advanced Tests (NUMA, io_uring)
+    runs-on: ubuntu-latest-8-cores
+    needs: build_and_basic_test
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y numactl hwloc linux-tools-generic
+      
+      - name: Check for NUMA support
+        id: check-numa
+        run: |
+          if numactl --hardware | grep -q "available"; then
+            echo "NUMA architecture detected"
+            echo "has_numa=true" >> $GITHUB_OUTPUT
+            # Get NUMA node count
+            numa_nodes=$(numactl --hardware | grep "available" | awk '{print $2}')
+            echo "numa_nodes=$numa_nodes" >> $GITHUB_OUTPUT
+          else
+            echo "No NUMA architecture detected"
+            echo "has_numa=false" >> $GITHUB_OUTPUT
+            echo "numa_nodes=0" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      
+      - name: Check io_uring support
+        id: check-io-uring
+        run: |
+          # Check kernel version for io_uring (5.1+)
+          kernel_version=$(uname -r | cut -d. -f1-2)
+          if [[ $(echo "$kernel_version >= 5.1" | bc) -eq 1 ]]; then
+            echo "Kernel supports io_uring"
+            echo "has_io_uring=true" >> $GITHUB_OUTPUT
+          else
+            echo "Kernel does not support io_uring"
+            echo "has_io_uring=false" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Run full test suite
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --verbose
+      
+      - name: Run examples
+        uses: actions-rs/cargo@v1
+        with:
+          command: run
+          args: --example thread_builder
+      
+      - name: Run NUMA-specific tests
+        if: steps.check-numa.outputs.has_numa == 'true'
+        run: |
+          echo "Running on a NUMA system with ${{ steps.check-numa.outputs.numa_nodes }} nodes"
+          # Run specific NUMA-aware tests or examples
+          cargo test --features numa
+          cargo run --example thread_builder
+      
+      - name: Run io_uring-specific tests
+        if: steps.check-io-uring.outputs.has_io_uring == 'true'
+        run: |
+          echo "Running with io_uring support"
+          # Run specific io_uring tests or examples with elevated privileges
+          sudo -E cargo test --features io_uring
