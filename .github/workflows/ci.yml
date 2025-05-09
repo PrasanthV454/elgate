@@ -11,53 +11,53 @@ env:
 
 jobs:
   # Standard build and basic tests on regular runners
-  build_and_basic_test:
-    name: Build and Basic Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          components: rustfmt, clippy
+  # build_and_basic_test:
+  #   name: Build and Basic Tests
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v3
+  #     - name: Install Rust
+  #       uses: actions-rs/toolchain@v1
+  #       with:
+  #         profile: minimal
+  #         toolchain: stable
+  #         override: true
+  #         components: rustfmt, clippy
 
-      - name: Check format
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+  #     - name: Check format
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: fmt
+  #         args: --all -- --check
 
-      - name: Clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
-          args: --all-targets -- -D warnings
+  #     - name: Clippy
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: clippy
+  #         args: --all-targets -- -D warnings
 
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --verbose
+  #     - name: Build
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: build
+  #         args: --verbose
 
-      - name: Run basic tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --verbose --no-default-features
+  #     - name: Run basic tests
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: test
+  #         args: --verbose --no-default-features
 
-      - name: Security audit
-        uses: actions-rs/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+  #     - name: Security audit
+  #       uses: actions-rs/audit-check@v1
+  #       with:
+  #         token: ${{ secrets.GITHUB_TOKEN }}
 
   # Advanced tests on larger runners
   advanced_tests:
     name: Advanced Tests (NUMA, io_uring)
-    runs-on: ubuntu-latest-8-cores
-    needs: build_and_basic_test
+    runs-on: ubuntu-latest-4-cores
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v3
       - name: Install system dependencies

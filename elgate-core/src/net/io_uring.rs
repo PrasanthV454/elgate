@@ -417,7 +417,7 @@ impl NetworkEngine {
     }
 
     /// Reads from a socket.
-    pub async fn read(&self, fd: RawFd) -> Result<Vec<u8>, Error> {
+    pub async fn read(&self, fd: RawFd) -> Result<Vec<u8>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
 
         self.tx
