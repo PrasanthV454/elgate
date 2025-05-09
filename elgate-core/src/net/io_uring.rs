@@ -17,6 +17,9 @@ use tokio::sync::mpsc;
 #[cfg(feature = "io_uring")]
 use tokio_uring::net::TcpStream as UringTcpStream;
 
+#[cfg(test)]
+use std::os::unix::fs::OpenOptionsExt;
+
 /// Configuration for the network I/O engine.
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
