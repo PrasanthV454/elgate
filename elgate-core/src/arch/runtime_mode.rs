@@ -86,7 +86,13 @@ impl RuntimeMode {
 
     /// Checks if this mode uses NUMA awareness
     pub fn is_numa_aware(&self) -> bool {
-        matches!(self, Self::PinnedSharded { numa_aware: true, .. })
+        matches!(
+            self,
+            Self::PinnedSharded {
+                numa_aware: true,
+                ..
+            }
+        )
     }
 
     /// Checks if this mode supports thread pinning
