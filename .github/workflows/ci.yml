@@ -124,5 +124,8 @@ jobs:
         if: steps.check-io-uring.outputs.has_io_uring == 'true'
         run: |
           echo "Running with io_uring support"
+          # Get the full path to cargo
+          CARGO_PATH=$(which cargo)
+          echo "Cargo path: $CARGO_PATH"
           # Run specific io_uring tests or examples with elevated privileges
-          sudo -E cargo test --features io_uring
+          sudo -E $CARGO_PATH test --features io_uring
