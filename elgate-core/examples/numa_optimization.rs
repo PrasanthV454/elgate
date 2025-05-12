@@ -3,6 +3,7 @@
 //! This example demonstrates the performance benefits of NUMA-aware operations
 //! by comparing NUMA-optimized and non-optimized ring buffers.
 
+use anyhow;
 use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::ring::{OperationKind, RingBuffer, RingBufferOptions};
 use std::path::PathBuf;
@@ -171,7 +172,7 @@ fn run_benchmark(
                     std::thread::sleep(Duration::from_micros(100));
                 }
                 Err(e) => {
-                    return Err(Box::new(e));
+                    return Err(anyhow::anyhow!("Ring buffer read error: {}", e));
                 }
             }
         }
