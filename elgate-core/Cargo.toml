@@ -36,6 +36,9 @@ futures = "0.3"
 # For network I/O
 socket2 = "0.5"
 
+# For examples and benchmarks
+rand = "0.8"
+
 [[example]]
 name = "cpu_info"
 path = "examples/cpu_info.rs"

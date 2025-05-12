@@ -8,8 +8,8 @@
 //! All operations use Elgate components.
 
 use elgate_core::arch::cpu_info::CpuInfo;
-use elgate_core::disk::{DiskConfig, DiskEngine};
-use elgate_core::net::{NetworkConfig, NetworkEngine};
+use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
+use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::io::AsRawFd;

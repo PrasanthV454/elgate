@@ -427,7 +427,7 @@ impl NetworkEngine {
             .send(NetworkOperation {
                 op_type: NetworkOperationType::Read,
                 addr: None,
-                fd: fd,
+                fd,
                 data: None,
                 callback: Some(Box::new(move |result| match result {
                     Ok(NetworkResult::Read(data)) => {
@@ -456,7 +456,7 @@ impl NetworkEngine {
             .send(NetworkOperation {
                 op_type: NetworkOperationType::Write,
                 addr: None,
-                fd: fd,
+                fd,
                 data: Some(data),
                 callback: Some(Box::new(move |result| match result {
                     Ok(NetworkResult::Write(n)) => {
@@ -485,7 +485,7 @@ impl NetworkEngine {
             .send(NetworkOperation {
                 op_type: NetworkOperationType::Close,
                 addr: None,
-                fd: fd,
+                fd,
                 data: None,
                 callback: Some(Box::new(move |result| match result {
                     Ok(NetworkResult::Close) => {

@@ -4,7 +4,7 @@
 //! running the appropriate implementation based on platform support.
 
 use elgate_core::arch::cpu_info::CpuInfo;
-use elgate_core::disk::{DiskConfig, DiskEngine};
+use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
