@@ -151,7 +151,7 @@ fn run_benchmark(
 
     // Spawn reader thread
     let reader_ring = ring.clone();
-    let reader_handle: JoinHandle<Result<usize, Box<dyn std::error::Error + Send>>> =
+    let reader_handle: JoinHandle<Result<usize, anyhow::Error>> =
         thread::spawn(move || {
             let mut read_count = 0;
             let total_expected = OPERATIONS_PER_THREAD * num_threads;

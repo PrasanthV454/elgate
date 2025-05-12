@@ -152,7 +152,7 @@ impl DiskEngine {
         let worker_handle = std::thread::spawn(move || {
             rt.block_on(async move {
                 // Add explicit type annotation
-                let mut file_cache: std::collections::HashMap<PathBuf, Arc<UringFile>> =
+                let mut file_cache: std::collections::HashMap<PathBuf, Arc<std::sync::Mutex<UringFile>>> =
                     std::collections::HashMap::new();
 
                 while let Some(op) = rx.recv().await {
@@ -167,7 +167,7 @@ impl DiskEngine {
                                 Some(file) => file.clone(),
                                 None => {
                                     let file = match UringFile::open(&path).await {
-                                        Ok(file) => Arc::new(file),
+                                        Ok(file) => Arc::new(std::sync::Mutex::new(file)),
                                         Err(err) => {
                                             if let Some(cb) = callback {
                                                 cb(Err(anyhow::anyhow!(
@@ -186,7 +186,8 @@ impl DiskEngine {
                             // Use direct Vec<u8> usage instead of ReadBuf
                             let buf_vec = vec![0u8; config.buffer_size];
                             let file_clone = file.clone();
-                            match file_clone.read_at(buf_vec, offset).await {
+                            let file_guard = file_clone.lock().unwrap();
+                            match file_guard.read_at(buf_vec, offset).await {
                                 (Ok(n), buf) => {
                                     let data = buf[..n].to_vec();
 
@@ -219,7 +220,7 @@ impl DiskEngine {
                                 Some(file) => file.clone(),
                                 None => {
                                     let file = match UringFile::create(&path).await {
-                                        Ok(file) => Arc::new(file),
+                                        Ok(file) => Arc::new(std::sync::Mutex::new(file)),
                                         Err(err) => {
                                             if let Some(cb) = callback {
                                                 cb(Err(anyhow::anyhow!(
@@ -263,7 +264,7 @@ impl DiskEngine {
 
                             // Get the file from the cache
                             if let Some(file) = file_cache.get(&path) {
-                                match file.sync_all().await {
+                                match file.lock().unwrap().sync_all().await {
                                     Ok(_) => {
                                         if let Some(cb) = callback {
                                             cb(Ok(vec![]));
