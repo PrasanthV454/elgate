@@ -151,35 +151,34 @@ fn run_benchmark(
 
     // Spawn reader thread
     let reader_ring = ring.clone();
-    let reader_handle: JoinHandle<Result<usize, anyhow::Error>> =
-        thread::spawn(move || {
-            let mut read_count = 0;
-            let total_expected = OPERATIONS_PER_THREAD * num_threads;
+    let reader_handle: JoinHandle<Result<usize, anyhow::Error>> = thread::spawn(move || {
+        let mut read_count = 0;
+        let total_expected = OPERATIONS_PER_THREAD * num_threads;
 
-            while read_count < total_expected {
-                // Read from ring buffer
-                match reader_ring.read() {
-                    Ok(Some(_)) => {
-                        read_count += 1;
+        while read_count < total_expected {
+            // Read from ring buffer
+            match reader_ring.read() {
+                Ok(Some(_)) => {
+                    read_count += 1;
 
-                        // Every 10,000 operations, print progress
-                        if read_count > 0 && read_count % 10000 == 0 {
-                            println!("Reader: {} operations read", read_count);
-                        }
-                    }
-                    Ok(None) => {
-                        // No data available, sleep briefly
-                        std::thread::sleep(Duration::from_micros(100));
-                    }
-                    Err(e) => {
-                        return Err(Box::new(e));
+                    // Every 10,000 operations, print progress
+                    if read_count > 0 && read_count % 10000 == 0 {
+                        println!("Reader: {} operations read", read_count);
                     }
                 }
+                Ok(None) => {
+                    // No data available, sleep briefly
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+                Err(e) => {
+                    return Err(Box::new(e));
+                }
             }
+        }
 
-            println!("Reader completed: {} operations read", read_count);
-            Ok(read_count)
-        });
+        println!("Reader completed: {} operations read", read_count);
+        Ok(read_count)
+    });
 
     // Wait for all writer threads
     for (i, handle) in handles.into_iter().enumerate() {

@@ -152,8 +152,10 @@ impl DiskEngine {
         let worker_handle = std::thread::spawn(move || {
             rt.block_on(async move {
                 // Add explicit type annotation
-                let mut file_cache: std::collections::HashMap<PathBuf, Arc<std::sync::Mutex<UringFile>>> =
-                    std::collections::HashMap::new();
+                let mut file_cache: std::collections::HashMap<
+                    PathBuf,
+                    Arc<std::sync::Mutex<UringFile>>,
+                > = std::collections::HashMap::new();
 
                 while let Some(op) = rx.recv().await {
                     match op.op_type {
