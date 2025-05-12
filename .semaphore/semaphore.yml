@@ -24,6 +24,7 @@ blocks:
         - name: "Check and Format"
           commands:
             - rustup component add rustfmt
+            - rustup component add clippy
             - cd elgate-core
             - cargo fmt -- --check
             - cargo clippy --all-targets --all-features
