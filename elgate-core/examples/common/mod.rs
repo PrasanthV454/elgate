@@ -25,9 +25,11 @@ pub fn check_io_uring_full_support() -> bool {
                     // Allocate a buffer for reading
                     let mut buf = vec![0u8; 100];
 
-                    // Read from the file
-                    match file.read_at(&mut buf, 0).await {
-                        Ok((n, _)) => {
+                    // Read from the file - note that tokio-uring takes ownership of the buffer
+                    let (res, buf) = file.read_at(buf, 0).await;
+
+                    match res {
+                        Ok(n) => {
                             println!("✅ Successfully read {} bytes using io_uring", n);
                             let content = String::from_utf8_lossy(&buf[0..n]);
                             println!("   Content: \"{}\"", content);
@@ -65,9 +67,7 @@ pub fn check_io_uring_full_support() -> bool {
         Ok(success) => success,
         Err(e) => {
             println!("❌ io_uring test panicked: {:?}", e);
-            false
+            return false;
         }
     }
-
-    true
 }
