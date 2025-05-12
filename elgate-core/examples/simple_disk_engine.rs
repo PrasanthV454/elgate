@@ -34,7 +34,7 @@ impl SimpleDiskEngine {
         let file = self.get_or_open_file(&path_str).await?;
 
         // First read a small amount to determine file size
-        let mut size_buf = vec![0u8; 1];
+        let size_buf = vec![0u8; 1];
         let (res, _) = file.read_at(size_buf, offset).await;
         res?; // Check for errors
 
@@ -93,10 +93,9 @@ impl SimpleDiskEngine {
             files.insert(path.to_string(), file);
         }
 
-        // We have to clone the file handle since we can't return a reference
-        // that outlives the MutexGuard
-        let file = files.get(path).unwrap().try_clone().await?;
-        Ok(file)
+        // tokio-uring::fs::File doesn't have try_clone, so we need to open a new one
+        // This is safe since the file is already open in our cache
+        File::open(path).await
     }
 
     /// Helper to get or create a file
@@ -111,8 +110,11 @@ impl SimpleDiskEngine {
             files.insert(path.to_string(), file);
         }
 
-        // We have to clone the file handle
-        let file = files.get(path).unwrap().try_clone().await?;
-        Ok(file)
+        // Instead of cloning the file (which tokio-uring doesn't support),
+        // open a new handle to the same file
+        match File::open(path).await {
+            Ok(file) => Ok(file),
+            Err(_) => File::create(path).await, // Fallback if file was removed
+        }
     }
 }

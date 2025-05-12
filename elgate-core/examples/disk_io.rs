@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         println!("Creating shared memory ring buffer...");
-        let ring = match RingBuffer::create(ring_options) {
+        let _ring = match RingBuffer::create(ring_options) {
             Ok(ring) => Arc::new(ring),
             Err(e) => {
                 println!("Failed to create ring buffer: {}", e);
