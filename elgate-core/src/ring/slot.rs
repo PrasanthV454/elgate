@@ -46,6 +46,9 @@ pub enum OperationKind {
     /// Receive from network.
     NetworkReceive = 4,
 
+    /// Close network connection.
+    NetworkClose = 5,
+
     /// Custom operation type.
     Custom = 100,
 }

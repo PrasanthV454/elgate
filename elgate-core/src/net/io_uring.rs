@@ -11,9 +11,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-#[cfg(feature = "io_uring")]
-use tokio_uring::net::TcpStream as UringTcpStream;
-
 #[cfg(test)]
 use std::os::unix::fs::OpenOptionsExt;
 
@@ -125,18 +122,20 @@ impl NetworkEngine {
 
     /// Accepts a connection on a listening socket.
     pub async fn accept(&self, listener_fd: RawFd) -> Result<(RawFd, SocketAddr)> {
-        // Get or create a listener from the raw file descriptor
-        let listener = unsafe {
-            let std_listener = std::net::TcpListener::from_raw_fd(listener_fd);
-            let addr = std_listener.local_addr()?;
-            let tokio_listener = tokio_uring::net::TcpListener::from(std_listener);
+        // Get the std listener from the raw file descriptor
+        let std_listener = unsafe { std::net::TcpListener::from_raw_fd(listener_fd) };
+        let addr = std_listener.local_addr()?;
 
-            // Store in our cache
-            let mut listeners = self.listeners.lock().unwrap();
-            listeners.insert(listener_fd, tokio_listener.clone());
+        // Set to non-blocking mode for io_uring
+        std_listener.set_nonblocking(true)?;
 
-            tokio_listener
-        };
+        // Extract the file descriptor and bind a tokio_uring listener to the same address
+        let _ = std_listener.as_raw_fd(); // Keep the fd alive
+        let listener = tokio_uring::net::TcpListener::bind(addr).await?;
+
+        // Store in our cache (using a new fd)
+        let mut listeners = self.listeners.lock().unwrap();
+        listeners.insert(listener_fd, listener);
 
         // Accept connection directly with tokio_uring
         let (stream, addr) = listener
@@ -183,35 +182,39 @@ impl NetworkEngine {
 
     /// Reads data from a socket.
     pub async fn read(&self, fd: RawFd) -> Result<Vec<u8>> {
-        // Find the connection in our cache
-        let stream = {
+        // First find the address that matches this fd
+        let addr = {
             let conns = self.connections.lock().unwrap();
-            let mut stream_opt = None;
+            let mut found_addr = None;
 
-            // Find the connection with this file descriptor
             for (addr, conn) in conns.iter() {
                 if conn.as_raw_fd() == fd {
-                    stream_opt = Some((addr.clone(), conn.clone()));
+                    found_addr = Some(addr.clone());
                     break;
                 }
             }
 
-            stream_opt.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
+            found_addr.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
         };
+
+        // Then get the stream
+        let mut conns = self.connections.lock().unwrap();
+        let stream = conns
+            .get_mut(&addr)
+            .ok_or_else(|| anyhow::anyhow!("Connection removed while reading"))?;
 
         // Allocate buffer
         let buf_size = self.config.buffer_size;
         let buf = vec![0u8; buf_size];
 
         // Read from socket
-        let (res, buf) = stream.1.read(buf).await;
+        let (res, buf) = stream.read(buf).await;
         let bytes_read = res.map_err(|e| anyhow::anyhow!("Failed to read from socket: {}", e))?;
 
         // Notify via ring buffer
-        let _ = self.ring_buffer.write(
-            OperationKind::NetworkReceive,
-            stream.0.to_string().as_bytes(),
-        );
+        let _ = self
+            .ring_buffer
+            .write(OperationKind::NetworkReceive, addr.to_string().as_bytes());
 
         // Return read data
         Ok(buf[..bytes_read].to_vec())
