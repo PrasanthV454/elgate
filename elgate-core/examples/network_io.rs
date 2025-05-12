@@ -55,11 +55,14 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------
 
     // Start an echo server in a separate thread
-    let server_addr = "127.0.0.1:8888".parse::<SocketAddr>().unwrap();
+    let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
     println!("Starting echo server at {}", server_addr);
 
+    let listener = TcpListener::bind(server_addr)?;
+    let actual_server_addr = listener.local_addr()?;
+    println!("Server actually listening on {}", actual_server_addr);
+
     let server_thread = thread::spawn(move || {
-        let listener = TcpListener::bind(server_addr).unwrap();
         println!("Server listening...");
 
         let (mut stream, client_addr) = listener.accept().unwrap();
@@ -80,7 +83,7 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to the server
     println!("Connecting to echo server...");
-    let server_addr = "127.0.0.1:8888".parse::<SocketAddr>().unwrap();
+    let server_addr = actual_server_addr;
     let socket_fd = net_engine.connect(server_addr).await?;
     println!("Connected, socket fd: {}", socket_fd);
 
@@ -112,9 +115,11 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nStarting server example...");
 
     // Create a TCP listener
-    let server_addr = "127.0.0.1:8889".parse::<SocketAddr>().unwrap();
+    let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
     println!("Creating TCP listener at {}", server_addr);
     let listener = TcpListener::bind(server_addr)?;
+    let actual_server_addr = listener.local_addr()?;
+    println!("Server actually listening on {}", actual_server_addr);
     let listener_fd = unsafe { std::os::unix::io::IntoRawFd::into_raw_fd(listener) };
 
     // Start a client in a separate thread
@@ -124,7 +129,7 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
         thread::sleep(Duration::from_millis(100));
 
         println!("Client connecting to server...");
-        let mut stream = TcpStream::connect(server_addr).unwrap();
+        let mut stream = TcpStream::connect(actual_server_addr).unwrap();
         println!("Client connected");
 
         // Send a message
@@ -172,41 +177,4 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Network I/O example completed successfully!");
     Ok(())
-}
-
-// Helper function to check if io_uring is fully supported
-fn check_io_uring_full_support() -> bool {
-    // Check for CI environment
-    if std::env::var("CI").is_ok() {
-        return false; // Skip in CI environments by default
-    }
-
-    // Additional checks for io_uring support
-    #[cfg(feature = "io_uring")]
-    {
-        // Basic check for device existence and permissions
-        let has_device = std::path::Path::new("/dev/io_uring").exists();
-        if !has_device {
-            return false;
-        }
-
-        // Try creating a minimal tokio-uring instance
-        if let Err(_) = std::thread::spawn(|| {
-            tokio_uring::start(async {
-                // Just a minimal test
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            });
-        })
-        .join()
-        {
-            return false;
-        }
-
-        true
-    }
-
-    #[cfg(not(feature = "io_uring"))]
-    {
-        false
-    }
 }
