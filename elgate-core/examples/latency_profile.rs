@@ -4,8 +4,8 @@
 //! to help identify bottlenecks and optimize performance.
 
 use elgate_core::arch::cpu_info::CpuInfo;
-use elgate_core::disk::{DiskConfig, DiskEngine};
-use elgate_core::net::{NetworkConfig, NetworkEngine};
+use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
+use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::io::{Read, Write};
 
 const TEST_FILE_PATH: &str = "/tmp/elgate_latency_test_file";
 const RING_PATH: &str = "/tmp/elgate_latency_ring";
