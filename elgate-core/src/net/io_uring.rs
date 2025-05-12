@@ -6,15 +6,10 @@
 use crate::ring::{OperationKind, RingBuffer};
 use anyhow::Result;
 use std::collections::HashMap;
-use std::future::Future;
-use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::task::{Context, Poll};
-use tokio::sync::mpsc;
 
 #[cfg(feature = "io_uring")]
 use tokio_uring::net::TcpStream as UringTcpStream;
@@ -134,7 +129,7 @@ impl NetworkEngine {
         let listener = unsafe {
             let std_listener = std::net::TcpListener::from_raw_fd(listener_fd);
             let addr = std_listener.local_addr()?;
-            let tokio_listener = tokio_uring::net::TcpListener::from_std(std_listener)?;
+            let tokio_listener = tokio_uring::net::TcpListener::from(std_listener);
 
             // Store in our cache
             let mut listeners = self.listeners.lock().unwrap();
@@ -159,7 +154,7 @@ impl NetworkEngine {
         // Notify via ring buffer
         let _ = self
             .ring_buffer
-            .write(OperationKind::NetworkRead, addr.to_string().as_bytes());
+            .write(OperationKind::NetworkReceive, addr.to_string().as_bytes());
 
         Ok((fd, addr))
     }
@@ -213,9 +208,10 @@ impl NetworkEngine {
         let bytes_read = res.map_err(|e| anyhow::anyhow!("Failed to read from socket: {}", e))?;
 
         // Notify via ring buffer
-        let _ = self
-            .ring_buffer
-            .write(OperationKind::NetworkRead, stream.0.to_string().as_bytes());
+        let _ = self.ring_buffer.write(
+            OperationKind::NetworkReceive,
+            stream.0.to_string().as_bytes(),
+        );
 
         // Return read data
         Ok(buf[..bytes_read].to_vec())
@@ -246,7 +242,7 @@ impl NetworkEngine {
         // Notify via ring buffer
         let _ = self
             .ring_buffer
-            .write(OperationKind::NetworkWrite, stream.0.to_string().as_bytes());
+            .write(OperationKind::NetworkSend, stream.0.to_string().as_bytes());
 
         // Return bytes written
         Ok(bytes_written)

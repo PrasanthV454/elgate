@@ -157,6 +157,7 @@ impl Slot {
             2 => OperationKind::DiskRead,
             3 => OperationKind::NetworkSend,
             4 => OperationKind::NetworkReceive,
+            5 => OperationKind::NetworkClose,
             100 => OperationKind::Custom,
             _ => OperationKind::None,
         }
