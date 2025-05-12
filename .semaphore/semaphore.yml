@@ -1,0 +1,26 @@
+version: v1.0
+name: Rust
+agent:
+  machine:
+    type: e2-standard-4
+    os_image: ubuntu2404
+  containers:
+    - name: main
+      image: 'registry.semaphoreci.com/rust:1.75'
+      
+blocks:
+  - name: Test
+    task:
+      agent:
+        machine:
+          type: e2-standard-4          # 4-core, Ubuntu 24.04 VM
+          os_image: ubuntu2404
+      prologue:
+        commands:
+          - sudo apt-get install -y liburing-dev numactl
+      jobs:
+        - name: cargo test
+          commands:
+            - checkout
+            - cargo build --verbose --features io_uring
+            - cargo test --verbose --features io_uring
