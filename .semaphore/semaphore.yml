@@ -11,10 +11,10 @@ agent:
 blocks:
   - name: Test
     task:
-      agent:
-        machine:
-          type: e2-standard-4          # 4-core, Ubuntu 24.04 VM
-          os_image: ubuntu2404
+      # agent:
+      #   machine:
+      #     type: e2-standard-4          # 4-core, Ubuntu 24.04 VM
+      #     os_image: ubuntu2404
       prologue:
         commands:
           # install io_uring headers once at VM level
@@ -24,5 +24,5 @@ blocks:
         - name: cargo test
           commands:
             - checkout
-            - cargo build --verbose
-            - cargo test --verbose
+            - cargo build --verbose --features io_uring
+            - cargo test --verbose --features io_uring
