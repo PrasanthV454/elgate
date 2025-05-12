@@ -61,9 +61,13 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     // Wait a moment to ensure everything is cleaned up
     tokio::time::sleep(Duration::from_millis(500)).await;
 
+    // Create a new engine instance for the server example to avoid any resource conflicts
+    println!("Reinitializing network engine for server example...");
+    let net_engine_server = NetworkEngine::new(config.clone(), ring.clone()).await?;
+
     // Then run server example
     println!("\n--- Running server example ---");
-    if let Err(e) = run_server_example(&net_engine).await {
+    if let Err(e) = run_server_example(&net_engine_server).await {
         eprintln!("Server example failed: {}", e);
     }
 
@@ -80,7 +84,7 @@ async fn run_client_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
     let (server_ready_tx, server_ready_rx) = mpsc::channel();
 
     // Start an echo server in a separate thread
-    let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+    let server_addr = "127.0.0.1:50000".parse::<SocketAddr>().unwrap();
     let listener = TcpListener::bind(server_addr)?;
     let actual_server_addr = listener.local_addr()?;
     println!("Starting echo server at {}", actual_server_addr);
@@ -156,65 +160,43 @@ async fn run_server_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
     let (server_ready_tx, server_ready_rx) = mpsc::channel();
 
     // Create a TCP listener
-    let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
-    let listener = TcpListener::bind(server_addr)?;
-    let actual_server_addr = listener.local_addr()?;
-    println!("Creating TCP listener at {}", actual_server_addr);
+    let server_addr = "127.0.0.1:40000".parse::<SocketAddr>().unwrap();
 
-    // Transfer ownership of the file descriptor
-    let listener_fd = unsafe { IntoRawFd::into_raw_fd(listener) };
+    // Start a listener thread that will coordinate with the network engine
+    let server_thread = thread::spawn(move || {
+        // Create the listener in this thread
+        match TcpListener::bind(server_addr) {
+            Ok(listener) => {
+                if let Ok(addr) = listener.local_addr() {
+                    println!("Server listening on {}", addr);
+                    // Send the address to the main thread
+                    let _ = server_ready_tx.send(());
 
-    // Start a client in a separate thread
-    println!("Starting client thread...");
-    let client_thread = thread::spawn(move || {
-        // Wait for signal that server is ready to accept
-        match server_ready_rx.recv() {
-            Ok(()) => {
-                println!("Client received ready signal");
-
-                // Allow a small delay for the server to start accepting
-                thread::sleep(Duration::from_millis(50));
-
-                println!("Client connecting to server...");
-                match TcpStream::connect(actual_server_addr) {
-                    Ok(mut stream) => {
-                        println!("Client connected");
-
-                        // Send a message
-                        let message = "Hello from client!";
-                        println!("Client sending: {}", message);
-                        if let Err(e) = stream.write_all(message.as_bytes()) {
-                            eprintln!("Client write error: {}", e);
-                            return;
-                        }
-
-                        // Read response
-                        let mut buffer = [0u8; 1024];
-                        match stream.read(&mut buffer) {
-                            Ok(n) if n > 0 => {
-                                println!(
-                                    "Client received: {}",
-                                    String::from_utf8_lossy(&buffer[0..n])
-                                );
-                            }
-                            Ok(_) => println!("Server closed connection"),
-                            Err(e) => eprintln!("Client read error: {}", e),
-                        }
+                    // Wait for the engine to be ready to accept
+                    println!("Waiting for engine to be ready...");
+                    if server_ready_rx.recv().is_ok() {
+                        println!("Engine is ready, transferring listener fd");
+                        // Transfer the listener to the engine
+                        let listener_fd = unsafe { IntoRawFd::into_raw_fd(listener) };
+                        let _ = server_ready_tx.send(listener_fd);
                     }
-                    Err(e) => eprintln!("Client connect error: {}", e),
                 }
             }
-            Err(e) => eprintln!("Client receive error: {}", e),
+            Err(e) => {
+                eprintln!("Error binding listener: {}", e);
+            }
         }
     });
 
-    // Signal that we're about to start accepting connections
-    println!("Server ready to accept connections");
-    server_ready_tx.send(()).unwrap();
+    // Get the address from the server thread
+    let listener_addr = match server_ready_rx.recv() {
+        Ok(addr) => addr,
+        Err(e) => return Err(format!("Failed to get listener address: {}", e).into()),
+    };
 
     // Accept connection using the engine
     println!("Server accepting connections...");
-    let (client_fd, addr) = match net_engine.accept(listener_fd).await {
+    let (client_fd, addr) = match net_engine.accept(listener_addr).await {
         Ok(result) => result,
         Err(e) => {
             // Make sure client thread exits if we fail
@@ -242,8 +224,8 @@ async fn run_server_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
     net_engine.close(client_fd).await?;
 
     // Wait for the client to complete
-    if let Err(e) = client_thread.join() {
-        eprintln!("Client thread join error: {:?}", e);
+    if let Err(e) = server_thread.join() {
+        eprintln!("Server thread join error: {:?}", e);
     }
 
     Ok(())
