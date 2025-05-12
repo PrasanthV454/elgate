@@ -23,6 +23,7 @@ blocks:
       jobs:
         - name: "Check and Format"
           commands:
+            - rustup component add rustfmt
             - cd elgate-core
             - cargo fmt -- --check
             - cargo clippy --all-targets --all-features
