@@ -131,7 +131,7 @@ impl NetworkEngine {
 
         // Extract the file descriptor and bind a tokio_uring listener to the same address
         let _ = std_listener.as_raw_fd(); // Keep the fd alive
-        let listener = tokio_uring::net::TcpListener::bind(addr).await?;
+        let listener = tokio_uring::net::TcpListener::bind(addr)?;
 
         // Store in our cache (using a new fd)
         let mut listeners = self.listeners.lock().unwrap();
@@ -222,30 +222,35 @@ impl NetworkEngine {
 
     /// Writes data to a socket.
     pub async fn write(&self, fd: RawFd, data: Vec<u8>) -> Result<usize> {
-        // Find the connection in our cache
-        let stream = {
+        // First find the address that matches this fd
+        let addr = {
             let conns = self.connections.lock().unwrap();
-            let mut stream_opt = None;
+            let mut found_addr = None;
 
-            // Find the connection with this file descriptor
             for (addr, conn) in conns.iter() {
                 if conn.as_raw_fd() == fd {
-                    stream_opt = Some((addr.clone(), conn.clone()));
+                    found_addr = Some(addr.clone());
                     break;
                 }
             }
 
-            stream_opt.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
+            found_addr.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
         };
 
+        // Then get the stream
+        let mut conns = self.connections.lock().unwrap();
+        let stream = conns
+            .get_mut(&addr)
+            .ok_or_else(|| anyhow::anyhow!("Connection removed while writing"))?;
+
         // Write to socket
-        let (res, _) = stream.1.write(data).await;
+        let (res, _) = stream.write(data).await;
         let bytes_written = res.map_err(|e| anyhow::anyhow!("Failed to write to socket: {}", e))?;
 
         // Notify via ring buffer
         let _ = self
             .ring_buffer
-            .write(OperationKind::NetworkSend, stream.0.to_string().as_bytes());
+            .write(OperationKind::NetworkSend, addr.to_string().as_bytes());
 
         // Return bytes written
         Ok(bytes_written)
