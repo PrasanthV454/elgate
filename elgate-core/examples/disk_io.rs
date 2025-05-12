@@ -36,7 +36,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         println!("Creating shared memory ring buffer...");
-        let ring = Arc::new(RingBuffer::create(ring_options)?);
+        let ring = match RingBuffer::create(ring_options) {
+            Ok(ring) => Arc::new(ring),
+            Err(e) => {
+                println!("Failed to create ring buffer: {}", e);
+                return;
+            }
+        };
 
         // Create disk engine
         let config = DiskConfig {
@@ -49,18 +55,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         println!("Initializing disk I/O engine...");
-        let disk_engine = DiskEngine::new(config, ring.clone()).await?;
+        let disk_engine = match DiskEngine::new(config, ring.clone()).await {
+            Ok(engine) => engine,
+            Err(e) => {
+                println!("Failed to initialize disk I/O engine: {}", e);
+                return;
+            }
+        };
 
         // Write data to a file
         let content = "Hello, Elgate disk I/O engine!";
         println!("Writing to file: {}", test_file_path);
-        disk_engine
+        if let Err(e) = disk_engine
             .write_file(test_file_path, 0, content.as_bytes().to_vec())
-            .await?;
+            .await
+        {
+            println!("Failed to write to file: {}", e);
+            return;
+        }
 
         // Read the data back
         println!("Reading from file...");
-        let read_data = disk_engine.read_file(test_file_path, 0).await?;
+        let read_data = match disk_engine.read_file(test_file_path, 0).await {
+            Ok(data) => data,
+            Err(e) => {
+                println!("Failed to read from file: {}", e);
+                return;
+            }
+        };
 
         // Print the read data
         let read_str = String::from_utf8_lossy(&read_data);
@@ -71,26 +93,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..5 {
             let offset = 100 + (i * 50);
             let chunk = format!("Chunk {} at offset {}", i, offset);
-            disk_engine
+            if let Err(e) = disk_engine
                 .write_file(test_file_path, offset as u64, chunk.as_bytes().to_vec())
-                .await?;
+                .await
+            {
+                println!("Failed to write chunk {}: {}", i, e);
+                return;
+            }
         }
 
         // Read back each chunk
         println!("Reading back chunks...");
         for i in 0..5 {
             let offset = 100 + (i * 50);
-            let read_data = disk_engine.read_file(test_file_path, offset as u64).await?;
+            let read_data = match disk_engine.read_file(test_file_path, offset as u64).await {
+                Ok(data) => data,
+                Err(e) => {
+                    println!("Failed to read chunk {}: {}", i, e);
+                    return;
+                }
+            };
             let read_str = String::from_utf8_lossy(&read_data);
             println!("  Offset {}: {}", offset, read_str.trim_end_matches('\0'));
         }
 
         // Sync and close
         println!("Syncing file to disk...");
-        disk_engine.sync_file(test_file_path).await?;
+        if let Err(e) = disk_engine.sync_file(test_file_path).await {
+            println!("Failed to sync file: {}", e);
+            return;
+        }
 
         println!("Closing file...");
-        disk_engine.close_file(test_file_path).await?;
+        if let Err(e) = disk_engine.close_file(test_file_path).await {
+            println!("Failed to close file: {}", e);
+            return;
+        }
 
         // Clean up
         println!("Cleaning up...");

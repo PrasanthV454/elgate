@@ -23,7 +23,7 @@ pub fn check_io_uring_full_support() -> bool {
             match File::open(test_file).await {
                 Ok(file) => {
                     // Allocate a buffer for reading
-                    let mut buf = vec![0u8; 100];
+                    let buf = vec![0u8; 100];
 
                     // Read from the file - note that tokio-uring takes ownership of the buffer
                     let (res, buf) = file.read_at(buf, 0).await;
