@@ -14,8 +14,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Use tokio-uring runtime instead of tokio runtime
+    tokio_uring::start(async {
+        run_example().await.unwrap();
+    });
+
+    Ok(())
+}
+
+async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shared memory ring buffer
     let ring_path = "/tmp/elgate_example_net_ring";
 
