@@ -46,11 +46,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Create disk engine
         let config = DiskConfig {
-            worker_threads: 1, // Not used anymore but kept for compatibility
-            pin_threads: false,
             queue_depth: 32,
             buffer_size: 4096,
-            numa_node: None,
         };
 
         let disk_engine = match DiskEngine::new(config, ring.clone()).await {

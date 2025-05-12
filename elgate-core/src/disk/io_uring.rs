@@ -8,41 +8,29 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tokio_uring::fs::{File, OpenOptions};
-
-#[cfg(feature = "io_uring")]
-use tokio_uring::fs::File as UringFile;
+use tokio_uring::fs::File;
+use tokio_uring::fs::OpenOptions;
 
 #[cfg(test)]
 use std::os::unix::fs::OpenOptionsExt;
 
 /// Configuration for the disk I/O engine.
+///
+/// This configuration is used for the direct tokio-uring implementation.
 #[derive(Debug, Clone)]
 pub struct DiskConfig {
-    /// Number of I/O worker threads to use.
-    pub worker_threads: usize,
-
-    /// Whether to pin I/O worker threads to CPUs.
-    pub pin_threads: bool,
-
     /// Queue depth for io_uring.
     pub queue_depth: u32,
 
     /// Size of the read/write buffer in bytes.
     pub buffer_size: usize,
-
-    /// NUMA node to use for I/O operations.
-    pub numa_node: Option<usize>,
 }
 
 impl Default for DiskConfig {
     fn default() -> Self {
         Self {
-            worker_threads: 2,
-            pin_threads: true,
             queue_depth: 256,
             buffer_size: 128 * 1024, // 128 KiB
-            numa_node: None,
         }
     }
 }
@@ -128,23 +116,28 @@ impl DiskEngine {
 
     /// Reads data from a file.
     pub async fn read_file<P: AsRef<Path>>(&self, path: P, offset: u64) -> Result<Vec<u8>> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Get the path as PathBuf
+        let path_buf = path.as_ref().to_path_buf();
 
-        self.tx
-            .send(DiskOperation {
-                op_type: DiskOperationType::Read,
-                path: path.as_ref().to_path_buf(),
-                offset,
-                data: None,
-                callback: Some(Box::new(move |result| {
-                    let _ = tx.send(result);
-                })),
-            })
+        // Open the file directly with tokio-uring
+        let file = File::open(&path_buf)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send read operation: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to open file: {}", e))?;
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive read result: {}", e))?
+        // Allocate a buffer based on config
+        let buf_size = self.config.buffer_size;
+        let buf = vec![0u8; buf_size];
+
+        // Read the data
+        let (res, buf) = file.read_at(buf, offset).await;
+        let bytes_read = res.map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .push(OperationKind::ReadComplete, &path_buf);
+
+        Ok(buf[..bytes_read].to_vec())
     }
 
     /// Writes data to a file at the specified path and offset.
@@ -154,94 +147,99 @@ impl DiskEngine {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        // Send the operation with a timeout
+        // Get the path as PathBuf
         let path_buf = path.as_ref().to_path_buf();
-        let send_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.tx.send(DiskOperation {
-                op_type: DiskOperationType::Write,
-                path: path_buf,
-                offset,
-                data: Some(data),
-                callback: Some(Box::new(move |result| {
-                    let _ = tx.send(result.map(|_| ()));
-                })),
-            }),
-        )
-        .await;
 
-        // Handle send timeout
-        match send_result {
-            Ok(send) => {
-                send.map_err(|e| anyhow::anyhow!("Failed to send write operation: {}", e))?;
-            }
-            Err(_) => return Err(anyhow::anyhow!("Timed out sending write operation")),
-        }
+        // Open the file with proper permissions
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false) // Don't truncate for random access
+            .open(&path_buf)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open file for writing: {}", e))?;
 
-        // Wait for operation completion with timeout
-        let receive_result = tokio::time::timeout(std::time::Duration::from_secs(10), rx).await;
+        // Write the data
+        let (res, _) = file.write_at(data, offset).await;
+        res.map_err(|e| anyhow::anyhow!("Failed to write to file: {}", e))?;
 
-        match receive_result {
-            Ok(result) => {
-                result.map_err(|e| anyhow::anyhow!("Failed to receive write result: {}", e))?
-            }
-            Err(_) => Err(anyhow::anyhow!(
-                "Timed out waiting for write operation to complete"
-            )),
-        }
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .push(OperationKind::WriteComplete, &path_buf);
+
+        Ok(())
     }
 
     /// Syncs a file to disk.
     pub async fn sync_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Get the path as PathBuf
+        let path_buf = path.as_ref().to_path_buf();
 
-        self.tx
-            .send(DiskOperation {
-                op_type: DiskOperationType::Sync,
-                path: path.as_ref().to_path_buf(),
-                offset: 0,
-                data: None,
-                callback: Some(Box::new(move |result| {
-                    let _ = tx.send(result.map(|_| ()));
-                })),
-            })
+        // Open with write permissions
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path_buf)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send sync operation: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to open file for sync: {}", e))?;
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive sync result: {}", e))?
+        // Sync the file
+        file.sync_all()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to sync file: {}", e))?;
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .push(OperationKind::SyncComplete, &path_buf);
+
+        Ok(())
     }
 
     /// Closes a file.
     pub async fn close_file<P: AsRef<Path>>(&self, path: P) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Get the path as PathBuf
+        let path_buf = path.as_ref().to_path_buf();
 
-        self.tx
-            .send(DiskOperation {
-                op_type: DiskOperationType::Close,
-                path: path.as_ref().to_path_buf(),
-                offset: 0,
-                data: None,
-                callback: Some(Box::new(move |result| {
-                    let _ = tx.send(result.map(|_| ()));
-                })),
-            })
+        // Close is effectively just removing from our cache
+        let mut files = self.file_handles.lock().unwrap();
+        files.remove(&path_buf);
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .push(OperationKind::CloseComplete, &path_buf);
+
+        Ok(())
+    }
+
+    /// Helper method to get or open a file
+    async fn get_or_open_file(&self, path: &Path) -> std::io::Result<File> {
+        // We don't use the cache for now to keep things simple
+        // This could be optimized later
+        File::open(path).await
+    }
+
+    /// Helper method to get or create a file for writing
+    async fn get_or_create_file(&self, path: &Path) -> std::io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send close operation: {}", e))?;
-
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive close result: {}", e))?
     }
 }
 
 impl Drop for DiskEngine {
     fn drop(&mut self) {
-        // Abort worker threads
-        if let Some(handle) = self.worker_handle.take() {
-            handle.abort();
-        }
+        // No worker threads to abort anymore
+        // Just drop our file handles
+        let mut files = self.file_handles.lock().unwrap();
+        files.clear();
     }
 }
 
