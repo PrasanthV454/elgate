@@ -17,8 +17,6 @@ blocks:
           os_image: ubuntu2404
       prologue:
         commands:
-          # install io_uring headers once at VM level
-          - sudo apt-get update --quiet
           - sudo apt-get install -y liburing-dev numactl
       jobs:
         - name: cargo test
