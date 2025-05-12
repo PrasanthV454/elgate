@@ -5,8 +5,9 @@
 
 mod common;
 use common::check_io_uring_full_support;
-use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
+mod simple_disk_engine;
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
+use simple_disk_engine::SimpleDiskEngine;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,24 +45,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // Create disk engine
-        let config = DiskConfig {
-            worker_threads: 2,
-            pin_threads: true,
-            #[cfg(feature = "io_uring")]
-            queue_depth: 32,
-            buffer_size: 4096,
-            numa_node: None,
-        };
-
-        println!("Initializing disk I/O engine...");
-        let disk_engine = match DiskEngine::new(config, ring.clone()).await {
-            Ok(engine) => engine,
-            Err(e) => {
-                println!("Failed to initialize disk I/O engine: {}", e);
-                return;
-            }
-        };
+        // Use the simple disk engine
+        let disk_engine = SimpleDiskEngine::new();
 
         // Write data to a file
         let content = "Hello, Elgate disk I/O engine!";
