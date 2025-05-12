@@ -38,14 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Creating shared memory ring buffer...");
     let ring = Arc::new(RingBuffer::create(ring_options)?);
 
-    // Create network engine
+    // Create network engine with simplified configuration
     let config = NetworkConfig {
-        worker_threads: 2,
-        pin_threads: true,
         #[cfg(feature = "io_uring")]
         queue_depth: 32,
         buffer_size: 4096,
-        numa_node: None,
     };
 
     println!("Initializing network I/O engine...");

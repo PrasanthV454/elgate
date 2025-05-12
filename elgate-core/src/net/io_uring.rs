@@ -5,12 +5,14 @@
 
 use crate::ring::{OperationKind, RingBuffer};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::future::Future;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -21,32 +23,22 @@ use tokio_uring::net::TcpStream as UringTcpStream;
 use std::os::unix::fs::OpenOptionsExt;
 
 /// Configuration for the network I/O engine.
+///
+/// This configuration is used for the direct tokio-uring implementation.
 #[derive(Debug, Clone)]
 pub struct NetworkConfig {
-    /// Number of I/O worker threads to use.
-    pub worker_threads: usize,
-
-    /// Whether to pin I/O worker threads to CPUs.
-    pub pin_threads: bool,
-
     /// Queue depth for io_uring.
     pub queue_depth: u32,
 
     /// Size of the read buffer in bytes.
     pub buffer_size: usize,
-
-    /// NUMA node to use for I/O operations.
-    pub numa_node: Option<usize>,
 }
 
 impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
-            worker_threads: 2,
-            pin_threads: true,
             queue_depth: 256,
             buffer_size: 64 * 1024, // 64 KiB
-            numa_node: None,
         }
     }
 }
@@ -62,11 +54,11 @@ pub struct NetworkEngine {
     /// Shared memory ring buffer for communication with other components.
     ring_buffer: Arc<RingBuffer>,
 
-    /// Channel for submitting I/O operations.
-    tx: mpsc::Sender<NetworkOperation>,
+    /// Connection cache to maintain open handles
+    connections: Mutex<HashMap<SocketAddr, tokio_uring::net::TcpStream>>,
 
-    /// Worker threads handle.
-    worker_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Listener cache to maintain open handles
+    listeners: Mutex<HashMap<RawFd, tokio_uring::net::TcpListener>>,
 }
 
 /// Type of network operation.
@@ -125,394 +117,181 @@ pub enum NetworkResult {
     Close,
 }
 
-// We need to fix the socket_cache type issue
-// Create a type alias for the socket we're storing
-type SocketType = std::net::TcpStream;
-
 impl NetworkEngine {
     /// Creates a new network I/O engine.
     pub async fn new(config: NetworkConfig, ring_buffer: Arc<RingBuffer>) -> Result<Self> {
-        let (tx, rx) = mpsc::channel(1024);
-
-        // Start worker thread(s)
-        let worker_handle = Self::start_workers(config.clone(), rx, ring_buffer.clone()).await?;
-
         Ok(Self {
             config,
             ring_buffer,
-            tx,
-            worker_handle: Some(worker_handle),
+            connections: Mutex::new(HashMap::new()),
+            listeners: Mutex::new(HashMap::new()),
         })
-    }
-
-    /// Starts the I/O worker threads.
-    async fn start_workers(
-        config: NetworkConfig,
-        mut rx: mpsc::Receiver<NetworkOperation>,
-        ring_buffer: Arc<RingBuffer>,
-    ) -> Result<tokio::task::JoinHandle<()>> {
-        // Create a new runtime with a single thread dedicated to io_uring
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()?;
-
-        // Spawn a thread to run this dedicated runtime
-        let worker_handle = std::thread::spawn(move || {
-            rt.block_on(async move {
-                #[cfg(feature = "io_uring")]
-                {
-                    // Create a socket handle cache
-                    let mut socket_cache: std::collections::HashMap<RawFd, SocketType> =
-                        std::collections::HashMap::new();
-
-                    while let Some(op) = rx.recv().await {
-                        match op.op_type {
-                            NetworkOperationType::Accept => {
-                                let fd = op.fd;
-
-                                // First create a TcpListener from the raw fd
-                                let std_listener =
-                                    unsafe { std::net::TcpListener::from_raw_fd(fd) };
-                                std_listener.set_nonblocking(true).unwrap();
-
-                                // Now just use the standard TcpListener directly
-                                match std_listener.accept() {
-                                    Ok((stream, addr)) => {
-                                        // Handle the accepted connection
-                                        // Get the fd of the new connection
-                                        let new_fd = stream.as_raw_fd();
-
-                                        // Add the new socket to the cache
-                                        socket_cache.insert(new_fd, stream);
-
-                                        // Write to the ring buffer
-                                        let data = format!("Accept: {}", addr).into_bytes();
-                                        if let Err(err) =
-                                            ring_buffer.write(OperationKind::NetworkReceive, &data)
-                                        {
-                                            eprintln!("Failed to write to ring buffer: {}", err);
-                                        }
-
-                                        if let Some(cb) = op.callback {
-                                            cb(Ok(NetworkResult::Accept(new_fd, addr)));
-                                        }
-                                    }
-                                    Err(err) => {
-                                        if let Some(cb) = op.callback {
-                                            cb(Err(anyhow::anyhow!("Accept failed: {}", err)));
-                                        }
-                                    }
-                                }
-                            }
-                            NetworkOperationType::Connect => {
-                                let addr = match op.addr {
-                                    Some(addr) => addr,
-                                    None => {
-                                        if let Some(cb) = op.callback {
-                                            cb(Err(anyhow::anyhow!(
-                                                "Connect operation requires an address"
-                                            )));
-                                        }
-                                        return;
-                                    }
-                                };
-
-                                match UringTcpStream::connect(addr).await {
-                                    Ok(uring_stream) => {
-                                        // Get the fd of the new connection
-                                        let fd = uring_stream.as_raw_fd();
-
-                                        // Convert to a standard TcpStream for consistent cache storage
-                                        let std_stream =
-                                            unsafe { std::net::TcpStream::from_raw_fd(fd) };
-
-                                        // Add to cache
-                                        socket_cache.insert(fd, std_stream);
-
-                                        // Write to the ring buffer
-                                        let data = format!("Connect: {}", addr).into_bytes();
-                                        if let Err(err) =
-                                            ring_buffer.write(OperationKind::NetworkSend, &data)
-                                        {
-                                            eprintln!("Failed to write to ring buffer: {}", err);
-                                        }
-
-                                        if let Some(cb) = op.callback {
-                                            cb(Ok(NetworkResult::Connect(fd)));
-                                        }
-                                    }
-                                    Err(err) => {
-                                        if let Some(cb) = op.callback {
-                                            cb(Err(anyhow::anyhow!("Connect failed: {}", err)));
-                                        }
-                                    }
-                                }
-                            }
-                            NetworkOperationType::Read => {
-                                let fd = op.fd;
-
-                                // Get the socket from the cache
-                                if let Some(stream) = socket_cache.get_mut(&fd) {
-                                    let mut buf = vec![0u8; config.buffer_size];
-
-                                    match stream.read(&mut buf) {
-                                        Ok(n) => {
-                                            buf.truncate(n);
-
-                                            // Write to the ring buffer
-                                            if let Err(err) = ring_buffer
-                                                .write(OperationKind::NetworkReceive, &buf)
-                                            {
-                                                eprintln!(
-                                                    "Failed to write to ring buffer: {}",
-                                                    err
-                                                );
-                                            }
-
-                                            if let Some(cb) = op.callback {
-                                                cb(Ok(NetworkResult::Read(buf)));
-                                            }
-                                        }
-                                        Err(err) => {
-                                            if let Some(cb) = op.callback {
-                                                cb(Err(anyhow::anyhow!("Read failed: {}", err)));
-                                            }
-                                        }
-                                    }
-                                } else if let Some(cb) = op.callback {
-                                    cb(Err(anyhow::anyhow!("Socket not found in cache")));
-                                }
-                            }
-                            NetworkOperationType::Write => {
-                                let fd = op.fd;
-
-                                let data = match op.data {
-                                    Some(data) => data,
-                                    None => {
-                                        if let Some(cb) = op.callback {
-                                            cb(Err(anyhow::anyhow!(
-                                                "Write operation requires data"
-                                            )));
-                                        }
-                                        return;
-                                    }
-                                };
-
-                                // Get the socket from the cache
-                                if let Some(stream) = socket_cache.get_mut(&fd) {
-                                    match stream.write(&data) {
-                                        Ok(n) => {
-                                            // Write to the ring buffer
-                                            if let Err(err) = ring_buffer
-                                                .write(OperationKind::NetworkSend, &data[..n])
-                                            {
-                                                eprintln!(
-                                                    "Failed to write to ring buffer: {}",
-                                                    err
-                                                );
-                                            }
-
-                                            if let Some(cb) = op.callback {
-                                                cb(Ok(NetworkResult::Write(n)));
-                                            }
-                                        }
-                                        Err(err) => {
-                                            if let Some(cb) = op.callback {
-                                                cb(Err(anyhow::anyhow!("Write failed: {}", err)));
-                                            }
-                                        }
-                                    }
-                                } else if let Some(cb) = op.callback {
-                                    cb(Err(anyhow::anyhow!("Socket not found in cache")));
-                                }
-                            }
-                            NetworkOperationType::Close => {
-                                let fd = op.fd;
-
-                                // Remove the socket from the cache
-                                socket_cache.remove(&fd);
-
-                                if let Some(cb) = op.callback {
-                                    cb(Ok(NetworkResult::Close));
-                                }
-                            }
-                        }
-                    }
-                }
-            });
-        });
-
-        // Create two separate channels
-        let (monitor_tx, monitor_rx) = tokio::sync::oneshot::channel();
-        let (wrapper_tx, wrapper_rx) = tokio::sync::oneshot::channel();
-
-        tokio::spawn(async move {
-            let _ = worker_handle.join();
-            let _ = monitor_tx.send(());
-        });
-
-        // Set up an async task to forward the signal
-        tokio::spawn(async move {
-            let _ = monitor_rx.await;
-            let _ = wrapper_tx.send(());
-        });
-
-        let wrapper = ReceiverWrapper { rx: wrapper_rx };
-        Ok(tokio::task::spawn(wrapper))
     }
 
     /// Accepts a connection on a listening socket.
     pub async fn accept(&self, listener_fd: RawFd) -> Result<(RawFd, SocketAddr)> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Get or create a listener from the raw file descriptor
+        let listener = unsafe {
+            let std_listener = std::net::TcpListener::from_raw_fd(listener_fd);
+            let addr = std_listener.local_addr()?;
+            let tokio_listener = tokio_uring::net::TcpListener::from_std(std_listener)?;
 
-        self.tx
-            .send(NetworkOperation {
-                op_type: NetworkOperationType::Accept,
-                addr: None,
-                fd: listener_fd,
-                data: None,
-                callback: Some(Box::new(move |result| match result {
-                    Ok(NetworkResult::Accept(fd, addr)) => {
-                        let _ = tx.send(Ok((fd, addr)));
-                    }
-                    Ok(_) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Unexpected result type")));
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
-                    }
-                })),
-            })
+            // Store in our cache
+            let mut listeners = self.listeners.lock().unwrap();
+            listeners.insert(listener_fd, tokio_listener.clone());
+
+            tokio_listener
+        };
+
+        // Accept connection directly with tokio_uring
+        let (stream, addr) = listener
+            .accept()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send accept operation: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to accept connection: {}", e))?;
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive accept result: {}", e))?
+        // Get the file descriptor
+        let fd = stream.as_raw_fd();
+
+        // Store the connection
+        let mut conns = self.connections.lock().unwrap();
+        conns.insert(addr, stream);
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .write(OperationKind::NetworkRead, addr.to_string().as_bytes());
+
+        Ok((fd, addr))
     }
 
     /// Connects to a remote host.
     pub async fn connect(&self, addr: SocketAddr) -> Result<RawFd> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-
-        self.tx
-            .send(NetworkOperation {
-                op_type: NetworkOperationType::Connect,
-                addr: Some(addr),
-                fd: -1,
-                data: None,
-                callback: Some(Box::new(move |result| match result {
-                    Ok(NetworkResult::Connect(fd)) => {
-                        let _ = tx.send(Ok(fd));
-                    }
-                    Ok(_) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Unexpected result type")));
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
-                    }
-                })),
-            })
+        // Connect directly with tokio_uring
+        let stream = tokio_uring::net::TcpStream::connect(addr)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send connect operation: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", addr, e))?;
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive connect result: {}", e))?
+        // Get the file descriptor
+        let fd = stream.as_raw_fd();
+
+        // Store the connection
+        let mut conns = self.connections.lock().unwrap();
+        conns.insert(addr, stream);
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .write(OperationKind::NetworkSend, addr.to_string().as_bytes());
+
+        Ok(fd)
     }
 
-    /// Reads from a socket.
+    /// Reads data from a socket.
     pub async fn read(&self, fd: RawFd) -> Result<Vec<u8>> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Find the connection in our cache
+        let stream = {
+            let conns = self.connections.lock().unwrap();
+            let mut stream_opt = None;
 
-        self.tx
-            .send(NetworkOperation {
-                op_type: NetworkOperationType::Read,
-                addr: None,
-                fd,
-                data: None,
-                callback: Some(Box::new(move |result| match result {
-                    Ok(NetworkResult::Read(data)) => {
-                        let _ = tx.send(Ok(data));
-                    }
-                    Ok(_) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Unexpected result type")));
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
-                    }
-                })),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send read operation: {}", e))?;
+            // Find the connection with this file descriptor
+            for (addr, conn) in conns.iter() {
+                if conn.as_raw_fd() == fd {
+                    stream_opt = Some((addr.clone(), conn.clone()));
+                    break;
+                }
+            }
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive read result: {}", e))?
+            stream_opt.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
+        };
+
+        // Allocate buffer
+        let buf_size = self.config.buffer_size;
+        let buf = vec![0u8; buf_size];
+
+        // Read from socket
+        let (res, buf) = stream.1.read(buf).await;
+        let bytes_read = res.map_err(|e| anyhow::anyhow!("Failed to read from socket: {}", e))?;
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .write(OperationKind::NetworkRead, stream.0.to_string().as_bytes());
+
+        // Return read data
+        Ok(buf[..bytes_read].to_vec())
     }
 
-    /// Writes to a socket.
+    /// Writes data to a socket.
     pub async fn write(&self, fd: RawFd, data: Vec<u8>) -> Result<usize> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Find the connection in our cache
+        let stream = {
+            let conns = self.connections.lock().unwrap();
+            let mut stream_opt = None;
 
-        self.tx
-            .send(NetworkOperation {
-                op_type: NetworkOperationType::Write,
-                addr: None,
-                fd,
-                data: Some(data),
-                callback: Some(Box::new(move |result| match result {
-                    Ok(NetworkResult::Write(n)) => {
-                        let _ = tx.send(Ok(n));
-                    }
-                    Ok(_) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Unexpected result type")));
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
-                    }
-                })),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send write operation: {}", e))?;
+            // Find the connection with this file descriptor
+            for (addr, conn) in conns.iter() {
+                if conn.as_raw_fd() == fd {
+                    stream_opt = Some((addr.clone(), conn.clone()));
+                    break;
+                }
+            }
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive write result: {}", e))?
+            stream_opt.ok_or_else(|| anyhow::anyhow!("No connection found for fd {}", fd))?
+        };
+
+        // Write to socket
+        let (res, _) = stream.1.write(data).await;
+        let bytes_written = res.map_err(|e| anyhow::anyhow!("Failed to write to socket: {}", e))?;
+
+        // Notify via ring buffer
+        let _ = self
+            .ring_buffer
+            .write(OperationKind::NetworkWrite, stream.0.to_string().as_bytes());
+
+        // Return bytes written
+        Ok(bytes_written)
     }
 
     /// Closes a socket.
     pub async fn close(&self, fd: RawFd) -> Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Remove connection from cache
+        let mut addr_to_remove = None;
+        {
+            let conns = self.connections.lock().unwrap();
 
-        self.tx
-            .send(NetworkOperation {
-                op_type: NetworkOperationType::Close,
-                addr: None,
-                fd,
-                data: None,
-                callback: Some(Box::new(move |result| match result {
-                    Ok(NetworkResult::Close) => {
-                        let _ = tx.send(Ok(()));
-                    }
-                    Ok(_) => {
-                        let _ = tx.send(Err(anyhow::anyhow!("Unexpected result type")));
-                    }
-                    Err(err) => {
-                        let _ = tx.send(Err(err));
-                    }
-                })),
-            })
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to send close operation: {}", e))?;
+            // Find the connection with this file descriptor
+            for (addr, conn) in conns.iter() {
+                if conn.as_raw_fd() == fd {
+                    addr_to_remove = Some(addr.clone());
+                    break;
+                }
+            }
+        }
 
-        rx.await
-            .map_err(|e| anyhow::anyhow!("Failed to receive close result: {}", e))?
+        // If found, remove it
+        if let Some(addr) = addr_to_remove {
+            let mut conns = self.connections.lock().unwrap();
+            conns.remove(&addr);
+
+            // Notify via ring buffer
+            let _ = self
+                .ring_buffer
+                .write(OperationKind::NetworkClose, addr.to_string().as_bytes());
+        }
+
+        Ok(())
     }
 }
 
 impl Drop for NetworkEngine {
     fn drop(&mut self) {
-        // Abort worker threads
-        if let Some(handle) = self.worker_handle.take() {
-            handle.abort();
-        }
+        // Close all connections
+        let mut conns = self.connections.lock().unwrap();
+        conns.clear();
+
+        // Close all listeners
+        let mut listeners = self.listeners.lock().unwrap();
+        listeners.clear();
     }
 }
 
@@ -532,11 +311,7 @@ mod tests {
             return;
         }
 
-        // Use tokio_uring::start for proper context
         tokio_uring::start(async {
-            use std::io::{Read, Write};
-            use std::os::unix::io::FromRawFd;
-
             // Create a ring buffer for communication
             let ring_path = "/tmp/elgate_test_net_ring_connect";
 
@@ -552,114 +327,165 @@ mod tests {
 
             let ring = std::sync::Arc::new(crate::ring::RingBuffer::create(ring_options).unwrap());
 
-            // Start echo server for testing
-            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let server_addr = server.local_addr().unwrap();
-            println!("Test server listening on {}", server_addr);
+            // Find an available port
+            let server_addr = {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let addr = listener.local_addr().unwrap();
+                drop(listener); // Release the port
+                addr
+            };
 
-            let server_handle = std::thread::spawn(move || {
-                if let Ok((mut stream, addr)) = server.accept() {
-                    println!("Server accepted connection from {}", addr);
+            println!("Test using server address: {}", server_addr);
 
-                    let mut buffer = [0u8; 128];
-                    if let Ok(n) = stream.read(&mut buffer) {
-                        let data = &buffer[..n];
-                        println!("Server received {} bytes", n);
-
-                        // Echo back
-                        if let Err(e) = stream.write(data) {
-                            println!("Server write error: {}", e);
-                        } else {
-                            println!("Server echoed data back");
-                        }
-                    }
-                }
-            });
-
-            // Create engine with CI-friendly settings
-            let config = super::NetworkConfig {
-                worker_threads: 1,
-                pin_threads: false,
+            // Create network engine with simplified config
+            let config = NetworkConfig {
                 queue_depth: 32,
                 buffer_size: 4096,
-                numa_node: None,
             };
 
-            // Create the client engine
-            let net_engine = match super::NetworkEngine::new(config, ring.clone()).await {
-                Ok(engine) => engine,
-                Err(e) => {
-                    println!("Failed to create io_uring network engine: {}", e);
-                    return;
-                }
-            };
+            let engine = NetworkEngine::new(config, ring.clone()).await.unwrap();
 
-            // Give the server time to start
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Start echo server using standard std library
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let server_handle = std::thread::spawn(move || {
+                let listener = std::net::TcpListener::bind(server_addr).unwrap();
+                println!("Server listening on {}", server_addr);
 
-            // Test client connection
+                // Signal client we're ready
+                let _ = tx.send(());
+
+                let (mut client, addr) = listener.accept().unwrap();
+                println!("Server accepted connection from {}", addr);
+
+                // Echo anything we receive
+                let mut buffer = [0u8; 1024];
+                let n = client.read(&mut buffer).unwrap();
+                println!("Server received {} bytes", n);
+
+                client.write_all(&buffer[..n]).unwrap();
+                println!("Server echoed data back");
+            });
+
+            // Wait for server to start
+            rx.await.unwrap();
+
+            // Connect to server using our engine
             println!("Connecting to {}", server_addr);
-            match net_engine.connect(server_addr).await {
-                Ok(fd) => {
-                    println!("Connected to server, fd={}", fd);
+            let fd = engine.connect(server_addr).await.unwrap();
+            println!("Connected with fd={}", fd);
 
-                    // Create a standard TcpStream from the fd
-                    let mut stream = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-                    stream.set_nonblocking(true).unwrap();
+            // Write data using engine
+            let test_data = b"Hello from io_uring!";
+            let bytes_written = engine.write(fd, test_data.to_vec()).await.unwrap();
+            println!("Wrote {} bytes", bytes_written);
 
-                    // Send test data
-                    let test_message = b"Hello from io_uring test client!";
-                    match stream.write(test_message) {
-                        Ok(n) => println!("Sent {} bytes", n),
-                        Err(e) => {
-                            println!("Write error: {}", e);
-                            return;
-                        }
-                    }
+            // Read response using engine
+            let received = engine.read(fd).await.unwrap();
+            println!(
+                "Read {} bytes: {:?}",
+                received.len(),
+                String::from_utf8_lossy(&received)
+            );
 
-                    // Read response
-                    let mut buffer = [0u8; 128];
-                    let mut read_bytes = 0;
-                    let start_time = std::time::Instant::now();
+            // Verify data is correct
+            assert_eq!(&received, test_data);
 
-                    while read_bytes == 0
-                        && start_time.elapsed() < std::time::Duration::from_secs(2)
-                    {
-                        match stream.read(&mut buffer) {
-                            Ok(n) if n > 0 => {
-                                read_bytes = n;
-                                let received = &buffer[..n];
-                                println!(
-                                    "Client received {} bytes: {:?}",
-                                    n,
-                                    String::from_utf8_lossy(received)
-                                );
-                                assert_eq!(received, test_message);
-                                break;
-                            }
-                            Ok(_) => {
-                                // No data yet, wait a bit
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                // Would block, wait a bit
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                            Err(e) => {
-                                println!("Read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-
-                    // Let the engine close the socket
-                    let _ = net_engine.close(fd).await;
-                }
-                Err(e) => println!("Connection error: {}", e),
-            }
+            // Close connection
+            engine.close(fd).await.unwrap();
 
             // Wait for server to complete
             let _ = server_handle.join();
+
+            // Clean up
+            let _ = std::fs::remove_file(ring_path);
+        });
+    }
+
+    #[test]
+    #[cfg(feature = "io_uring")]
+    fn test_network_engine_accept() {
+        // Skip if not supported
+        if !has_network_io_uring_permissions() {
+            println!("Skipping io_uring network test - insufficient permissions or support");
+            return;
+        }
+
+        tokio_uring::start(async {
+            // Create a ring buffer for communication
+            let ring_path = "/tmp/elgate_test_net_ring_accept";
+
+            // Clean up from previous runs
+            let _ = std::fs::remove_file(ring_path);
+
+            // Create ring buffer with proper options
+            let ring_options = crate::ring::RingBufferOptions {
+                path: std::path::PathBuf::from(ring_path),
+                size: 1024 * 1024, // 1 MiB
+                slot_size: 4096,   // 4 KiB
+            };
+
+            let ring = std::sync::Arc::new(crate::ring::RingBuffer::create(ring_options).unwrap());
+
+            // Create network engine with simplified config
+            let config = NetworkConfig {
+                queue_depth: 32,
+                buffer_size: 4096,
+            };
+
+            let engine = NetworkEngine::new(config, ring.clone()).await.unwrap();
+
+            // Setup a TCP listener
+            let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let server_addr = std_listener.local_addr().unwrap();
+            println!("Test server listening on {}", server_addr);
+
+            // Get the raw fd to pass to our engine
+            let listener_fd = std_listener.as_raw_fd();
+
+            // Start a client that connects in a separate thread
+            let client_handle = std::thread::spawn(move || {
+                // Small delay to ensure the server is ready
+                std::thread::sleep(std::time::Duration::from_millis(100));
+
+                // Connect to the server
+                let mut client = std::net::TcpStream::connect(server_addr).unwrap();
+                println!("Client connected to {}", server_addr);
+
+                // Send some data
+                let test_data = b"Hello from test client!";
+                client.write_all(test_data).unwrap();
+                println!("Client sent data");
+
+                // Read echo response
+                let mut buffer = [0u8; 1024];
+                let n = client.read(&mut buffer).unwrap();
+                println!("Client received {} bytes back", n);
+
+                // Verify data
+                assert_eq!(&buffer[..n], test_data);
+            });
+
+            // Accept using our engine
+            let (client_fd, client_addr) = engine.accept(listener_fd).await.unwrap();
+            println!("Server accepted connection from {}", client_addr);
+
+            // Read the data sent by client
+            let received = engine.read(client_fd).await.unwrap();
+            println!(
+                "Server read {} bytes: {:?}",
+                received.len(),
+                String::from_utf8_lossy(&received)
+            );
+
+            // Echo it back
+            let bytes_written = engine.write(client_fd, received.clone()).await.unwrap();
+            println!("Server echoed {} bytes back", bytes_written);
+
+            // Close the connection
+            engine.close(client_fd).await.unwrap();
+
+            // Wait for client to complete
+            let _ = client_handle.join();
 
             // Clean up
             let _ = std::fs::remove_file(ring_path);
@@ -729,251 +555,5 @@ mod tests {
             && has_submission_queue_permissions
             && can_bind_to_localhost
             && has_socket_permissions
-    }
-
-    #[test]
-    #[cfg(feature = "io_uring")]
-    fn test_network_engine_accept() {
-        // Skip if not supported
-        if !has_network_io_uring_permissions() {
-            println!("Skipping io_uring network test - insufficient permissions or support");
-            return;
-        }
-
-        // Use tokio_uring::start for proper context
-        tokio_uring::start(async {
-            use std::os::unix::io::{AsRawFd, FromRawFd};
-            use tokio::sync::oneshot;
-
-            // Create a ring buffer for communication
-            let ring_path = "/tmp/elgate_test_net_ring";
-
-            // Clean up from previous runs
-            let _ = std::fs::remove_file(ring_path);
-
-            // Create ring buffer with proper options
-            let ring_options = crate::ring::RingBufferOptions {
-                path: std::path::PathBuf::from(ring_path),
-                size: 1024 * 1024, // 1 MiB
-                slot_size: 4096,   // 4 KiB
-            };
-
-            let ring = std::sync::Arc::new(crate::ring::RingBuffer::create(ring_options).unwrap());
-
-            // Find an available port
-            let server_addr = {
-                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                let addr = listener.local_addr().unwrap();
-                drop(listener); // Release the port
-                addr
-            };
-
-            println!("Test using server address: {}", server_addr);
-
-            // Create CI-friendly settings
-            let config = super::NetworkConfig {
-                worker_threads: 1,
-                pin_threads: false,
-                queue_depth: 32,
-                buffer_size: 4096,
-                numa_node: None,
-            };
-
-            // Create two separate network engines - one for server, one for client
-            let server_engine = match super::NetworkEngine::new(config.clone(), ring.clone()).await
-            {
-                Ok(engine) => engine,
-                Err(e) => {
-                    println!("Failed to create server io_uring network engine: {}", e);
-                    return;
-                }
-            };
-
-            let client_engine = match super::NetworkEngine::new(config, ring.clone()).await {
-                Ok(engine) => engine,
-                Err(e) => {
-                    println!("Failed to create client io_uring network engine: {}", e);
-                    return;
-                }
-            };
-
-            // Create a channel for server-client synchronization
-            let (tx, rx) = oneshot::channel::<()>();
-
-            // Start server in a separate thread
-            let server_handle = std::thread::spawn(move || {
-                println!("Server thread starting");
-
-                tokio_uring::start(async {
-                    // Create a standard TCP listener
-                    let std_listener = std::net::TcpListener::bind(server_addr).unwrap();
-                    std_listener.set_nonblocking(true).unwrap();
-
-                    println!("Server listening on {}", server_addr);
-
-                    // Signal client that server is ready
-                    let _ = tx.send(());
-
-                    // Get the raw file descriptor
-                    let listener_fd = std_listener.as_raw_fd();
-
-                    // Use the network engine to accept the connection
-                    match server_engine.accept(listener_fd).await {
-                        Ok((client_fd, client_addr)) => {
-                            println!("Server accepted connection from {}", client_addr);
-
-                            // We need to create a TcpStream from the raw fd to read/write
-                            let mut stream = unsafe { std::net::TcpStream::from_raw_fd(client_fd) };
-                            stream.set_nonblocking(true).unwrap();
-
-                            // Create buffer for reading
-                            let mut buffer = [0u8; 128];
-
-                            // Read in a loop with timeout since we're non-blocking
-                            let mut read_bytes = 0;
-                            let start_time = std::time::Instant::now();
-
-                            while read_bytes == 0
-                                && start_time.elapsed() < std::time::Duration::from_secs(2)
-                            {
-                                match stream.read(&mut buffer) {
-                                    Ok(n) if n > 0 => {
-                                        read_bytes = n;
-                                        let data = &buffer[..n];
-                                        println!(
-                                            "Server received {} bytes: {:?}",
-                                            n,
-                                            String::from_utf8_lossy(data)
-                                        );
-
-                                        // Echo back
-                                        if let Err(e) = stream.write(data) {
-                                            println!("Server write error: {}", e);
-                                        } else {
-                                            println!("Server echoed data back to client");
-                                        }
-                                    }
-                                    Ok(_) => {
-                                        // No data yet, wait a bit
-                                        std::thread::sleep(std::time::Duration::from_millis(50));
-                                    }
-                                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                        // Would block, wait a bit
-                                        std::thread::sleep(std::time::Duration::from_millis(50));
-                                    }
-                                    Err(e) => {
-                                        println!("Server read error: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Let engine close the socket
-                            let _ = server_engine.close(client_fd).await;
-                        }
-                        Err(e) => println!("Server accept error: {}", e),
-                    }
-                });
-            });
-
-            // Wait for server to start
-            println!("Waiting for server to initialize...");
-            match tokio::time::timeout(std::time::Duration::from_secs(2), rx).await {
-                Ok(_) => println!("Server signaled it's ready"),
-                Err(_) => {
-                    println!("Timed out waiting for server to start");
-                    let _ = server_handle.join();
-                    return;
-                }
-            }
-
-            // Add a small delay for stability
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-            // Client test using the client_engine
-            println!("Client connecting to {}", server_addr);
-            match client_engine.connect(server_addr).await {
-                Ok(client_fd) => {
-                    println!("Client connected, fd={}", client_fd);
-
-                    // Create a proper stream from the raw fd
-                    let mut stream = unsafe { std::net::TcpStream::from_raw_fd(client_fd) };
-                    stream.set_nonblocking(true).unwrap();
-
-                    // Send test data
-                    let test_message = b"Hello from io_uring client!";
-                    match stream.write(test_message) {
-                        Ok(_) => println!("Client sent message"),
-                        Err(e) => {
-                            println!("Client write error: {}", e);
-                            return;
-                        }
-                    }
-
-                    // Read the echoed response
-                    let mut buffer = [0u8; 128];
-                    let mut read_bytes = 0;
-                    let start_time = std::time::Instant::now();
-
-                    while read_bytes == 0
-                        && start_time.elapsed() < std::time::Duration::from_secs(2)
-                    {
-                        match stream.read(&mut buffer) {
-                            Ok(n) if n > 0 => {
-                                read_bytes = n;
-                                let received = &buffer[..n];
-                                println!(
-                                    "Client received {} bytes: {:?}",
-                                    n,
-                                    String::from_utf8_lossy(received)
-                                );
-                                assert_eq!(received, test_message);
-                                break;
-                            }
-                            Ok(_) => {
-                                // No data yet, wait a bit
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                // Would block, wait a bit
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                            Err(e) => {
-                                println!("Client read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-
-                    // Let engine close the socket
-                    let _ = client_engine.close(client_fd).await;
-                }
-                Err(e) => println!("Client connection error: {}", e),
-            }
-
-            // Wait for server to complete
-            let _ = server_handle.join();
-
-            // Clean up
-            let _ = std::fs::remove_file(ring_path);
-        });
-    }
-}
-
-// Create a simple Future wrapper around the receiver
-struct ReceiverWrapper {
-    rx: tokio::sync::oneshot::Receiver<()>,
-}
-
-impl Future for ReceiverWrapper {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // Properly handle the Pin by using Pin::new
-        let rx = &mut self.get_mut().rx;
-        match Pin::new(rx).poll(cx) {
-            Poll::Ready(_) => Poll::Ready(()),
-            Poll::Pending => Poll::Pending,
-        }
     }
 }
