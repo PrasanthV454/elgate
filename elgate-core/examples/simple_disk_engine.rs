@@ -3,8 +3,9 @@
 //! This version avoids the thread context issues by using tokio-uring directly
 //! without spawning additional worker threads.
 
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use tokio_uring::fs::File;
+use tokio_uring::fs::{File, OpenOptions};
 
 /// A simplified disk engine that works directly with tokio-uring
 /// without creating separate worker threads
@@ -48,13 +49,14 @@ impl SimpleDiskEngine {
         offset: u64,
         data: Vec<u8>,
     ) -> std::io::Result<()> {
-        // Use regular std::fs to ensure the file exists first
-        if !std::path::Path::new(path.as_ref()).exists() {
-            std::fs::File::create(path.as_ref())?;
-        }
-
-        // Now open with tokio-uring
-        let file = File::open(path).await?;
+        // Open with proper write permissions, following tokio-uring's cat.rs example pattern
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false) // Don't truncate for random access
+            .open(path)
+            .await?;
 
         // Write the data
         let (res, _) = file.write_at(data, offset).await;
@@ -65,7 +67,8 @@ impl SimpleDiskEngine {
 
     /// Sync a file to disk
     pub async fn sync_file<P: AsRef<Path>>(&self, path: P) -> std::io::Result<()> {
-        let file = File::open(path).await?;
+        // Need write permission to sync
+        let file = OpenOptions::new().read(true).write(true).open(path).await?;
         file.sync_all().await?;
         Ok(())
     }
