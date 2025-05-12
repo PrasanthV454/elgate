@@ -65,8 +65,8 @@ Elgate is currently in early development. Check back soon for installation and u
 
 - Rust 1.86.0 or later
 - **Linux** kernel 5.10+ (5.11+ recommended for best performance)
-- CMake (for some dependencies)
-- Docker (for development on non-Linux platforms)
+- `liburing-dev` package for io_uring support
+- `numactl` package for NUMA support
 
 **Note**: This project uses Linux-specific features (io_uring, NUMA topology, etc.) and cannot run natively on macOS or Windows.
 
@@ -77,6 +77,10 @@ Elgate is currently in early development. Check back soon for installation and u
 If you're on Linux, you can build directly:
 
 ```bash
+# Install required dependencies
+sudo apt-get update
+sudo apt-get install -y liburing-dev numactl
+
 # Build the project (io_uring and NUMA support are enabled by default)
 cargo build
 
@@ -84,31 +88,15 @@ cargo build
 cargo test
 ```
 
-#### Docker Development (for macOS/Windows)
+#### Using Semaphore CI for Development
 
-We provide a Docker environment for development on non-Linux platforms:
+For the best development experience, we recommend using Semaphore CI which provides a proper Linux environment with all dependencies pre-configured:
 
-```bash
-# Build the Docker image (first time only)
-docker-compose build
+1. Fork the repository
+2. Connect your fork to Semaphore CI
+3. Use the provided environment for development and testing
 
-# Interactive development shell
-docker-compose run --rm elgate-dev
-
-# Inside the container:
-cargo build
-cargo test
-```
-
-For one-off commands:
-
-```bash
-# Build the project
-docker-compose run --rm elgate-dev cargo build
-
-# Run tests
-docker-compose run --rm elgate-dev cargo test
-```
+The `.semaphore/semaphore.yml` configuration file is already set up with all necessary dependencies.
 
 #### Disabling Linux-specific Features
 
@@ -121,6 +109,8 @@ cargo build --no-default-features
 # Enable only specific features
 cargo build --no-default-features --features "numa"
 ```
+
+> ⚠️ **Note**: While Docker-based development is configured in the repository, it is currently not functioning properly. We recommend using native Linux or Semaphore CI instead.
 
 ### Project Structure
 
