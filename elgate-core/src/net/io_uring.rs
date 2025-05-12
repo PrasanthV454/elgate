@@ -122,22 +122,20 @@ impl NetworkEngine {
 
     /// Accepts a connection on a listening socket.
     pub async fn accept(&self, listener_fd: RawFd) -> Result<(RawFd, SocketAddr)> {
-        // Get the std listener from the raw file descriptor
+        // Create a tokio_uring listener directly without caching for now
+        // This simplified approach avoids the borrowing issues
+
+        // Get info about the listener socket
         let std_listener = unsafe { std::net::TcpListener::from_raw_fd(listener_fd) };
         let addr = std_listener.local_addr()?;
 
-        // Set to non-blocking mode for io_uring
-        std_listener.set_nonblocking(true)?;
+        // Important: Don't close the original fd
+        let _ = std_listener.as_raw_fd();
 
-        // Extract the file descriptor and bind a tokio_uring listener to the same address
-        let _ = std_listener.as_raw_fd(); // Keep the fd alive
+        // Create a new tokio-uring listener
         let listener = tokio_uring::net::TcpListener::bind(addr)?;
 
-        // Store in our cache (using a new fd)
-        let mut listeners = self.listeners.lock().unwrap();
-        listeners.insert(listener_fd, listener);
-
-        // Accept connection directly with tokio_uring
+        // Accept the connection
         let (stream, addr) = listener
             .accept()
             .await
