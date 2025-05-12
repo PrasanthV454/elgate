@@ -37,9 +37,10 @@ blocks:
         - name: "Run Examples"
           commands:
             - cd elgate-core
-            - |
-              for example in $(ls examples/*.rs | xargs -n1 basename | sed 's/\.rs$//'); do
-                echo "Running example: $example"
-                cargo run --example $example || echo "Failed to run example $example"
-              done
-              
+            # - |
+            #   for example in $(ls examples/*.rs | xargs -n1 basename | sed 's/\.rs$//'); do
+            #     echo "Running example: $example"
+            #     cargo run --example $example || echo "Failed to run example $example"
+            #   done
+            - cargo run --example disk_io
+
