@@ -8,13 +8,13 @@ use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::io::{Read, Write};
 
 const TEST_FILE_PATH: &str = "/tmp/elgate_latency_test_file";
 const RING_PATH: &str = "/tmp/elgate_latency_ring";
