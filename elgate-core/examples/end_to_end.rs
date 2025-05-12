@@ -7,6 +7,8 @@
 //! 4. Writing it back to disk
 //! All operations use Elgate components.
 
+mod common;
+use common::check_io_uring_full_support;
 use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
@@ -24,6 +26,12 @@ const RING_PATH_CLIENT: &str = "/tmp/elgate_client_ring";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Skip if io_uring not supported
+    if !check_io_uring_full_support() {
+        println!("Skipping io_uring example - not fully supported in this environment");
+        return Ok(());
+    }
+
     println!("Elgate End-to-End Example");
     println!("========================");
 

@@ -2,36 +2,70 @@
 
 /// Checks if io_uring is fully supported in this environment
 pub fn check_io_uring_full_support() -> bool {
-    // Skip in CI environments by default
-    if std::env::var("CI").is_ok() {
-        println!("Running in CI environment, io_uring may not be fully supported");
+    // Perform a real io_uring operation
+    // Create a temporary file to test with
+    let test_file = "/tmp/elgate_iouring_test";
+    let test_data = b"This is a test";
+
+    // First write test file using regular IO
+    if let Err(e) = std::fs::write(test_file, test_data) {
+        println!("Failed to create test file: {}", e);
         return false;
     }
 
-    // Basic check for device existence
-    let has_device = std::path::Path::new("/dev/io_uring").exists();
-    if !has_device {
-        println!("Missing /dev/io_uring device");
-        return false;
-    }
+    // Try to use tokio-uring to read the file
+    println!("Testing io_uring with a real file read operation...");
+    let result = std::thread::spawn(move || -> bool {
+        use tokio_uring::fs::File;
 
-    // Check for kernel version (io_uring works best on 5.10+)
-    if let Ok(output) = std::process::Command::new("uname").arg("-r").output() {
-        let version = String::from_utf8_lossy(&output.stdout);
-        let version_parts: Vec<&str> = version.split('.').collect();
-        if version_parts.len() >= 2 {
-            if let (Ok(major), Ok(minor)) = (
-                version_parts[0].trim().parse::<u32>(),
-                version_parts[1].trim().parse::<u32>(),
-            ) {
-                if major < 5 || (major == 5 && minor < 10) {
-                    println!(
-                        "Kernel version {}.{} may not fully support io_uring",
-                        major, minor
-                    );
+        tokio_uring::start(async {
+            // Try to open and read the file
+            match File::open(test_file).await {
+                Ok(file) => {
+                    // Allocate a buffer for reading
+                    let mut buf = vec![0u8; 100];
+
+                    // Read from the file
+                    match file.read_at(&mut buf, 0).await {
+                        Ok((n, _)) => {
+                            println!("✅ Successfully read {} bytes using io_uring", n);
+                            let content = String::from_utf8_lossy(&buf[0..n]);
+                            println!("   Content: \"{}\"", content);
+
+                            // Verify the content
+                            let expected = String::from_utf8_lossy(test_data);
+                            if content == expected {
+                                println!("✅ Content matches, io_uring is fully functional");
+                                return true;
+                            } else {
+                                println!("❌ Content mismatch, io_uring may have issues");
+                                return false;
+                            }
+                        }
+                        Err(e) => {
+                            println!("❌ io_uring read failed: {}", e);
+                            return false;
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ io_uring file open failed: {}", e);
                     return false;
                 }
             }
+        })
+    })
+    .join();
+
+    // Clean up the test file
+    let _ = std::fs::remove_file(test_file);
+
+    // Check result
+    match result {
+        Ok(success) => success,
+        Err(e) => {
+            println!("❌ io_uring test panicked: {:?}", e);
+            false
         }
     }
 
