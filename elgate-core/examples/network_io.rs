@@ -16,12 +16,6 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Check if io_uring is fully supported in this environment
-    if !check_io_uring_full_support() {
-        println!("Skipping io_uring example - not fully supported in this environment");
-        return Ok(());
-    }
-
     // Create a shared memory ring buffer
     let ring_path = "/tmp/elgate_example_net_ring";
 
