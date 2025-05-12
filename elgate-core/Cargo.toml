@@ -71,3 +71,23 @@ path = "examples/numa_ring_buffer.rs"
 name = "error_handling"
 path = "examples/error_handling.rs"
 required-features = ["io_uring"]
+
+[[example]]
+name = "cross_platform_benchmark"
+path = "examples/cross_platform_benchmark.rs"
+required-features = ["io_uring"]
+
+[[example]]
+name = "end_to_end"
+path = "examples/end_to_end.rs"
+required-features = ["io_uring"]
+
+[[example]]
+name = "numa_optimization"
+path = "examples/numa_optimization.rs"
+required-features = ["numa"]
+
+[[example]]
+name = "latency_profile"
+path = "examples/latency_profile.rs"
+required-features = ["io_uring"]

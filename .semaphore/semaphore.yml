@@ -1,5 +1,5 @@
 version: v1.0
-name: Rust
+name: Elgate CI
 agent:
   machine:
     type: e2-standard-4
@@ -9,7 +9,7 @@ agent:
       image: 'registry.semaphoreci.com/rust:1.75'
       
 blocks:
-  - name: Test
+  - name: "Build and Test"
     task:
       agent:
         machine:
@@ -17,10 +17,23 @@ blocks:
           os_image: ubuntu2404
       prologue:
         commands:
-          - sudo apt-get install -y liburing-dev numactl
+          - sudo apt-get install -y liburing-dev libnuma-dev numactl
       jobs:
-        - name: cargo test
+        - name: "Check and Format"
           commands:
-            - checkout
-            - cargo build --verbose
+            - cd elgate-core
+            - cargo fmt -- --check
+            - cargo clippy --all-targets --all-features
+            
+        - name: "Unit Tests"
+          commands:
+            - cd elgate-core
             - cargo test --verbose
+        
+        - name: "Run Examples"
+          commands:
+            - cd elgate-core
+            - for example in $(ls examples/*.rs | xargs -n1 basename | sed 's/\.rs$//'); do
+                cargo run --example $example || echo "Failed to run example $example"
+              done
+  
