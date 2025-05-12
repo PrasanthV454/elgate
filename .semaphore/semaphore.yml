@@ -1,22 +1,45 @@
+# version: v1.0
+# name: Rust
+# agent:
+#   machine:
+#     type: f1-standard-2
+#     os_image: ubuntu2004
+#   containers:
+#     - name: main
+#       image: 'registry.semaphoreci.com/rust:1.47'
+# blocks:
+#   - name: Test
+#     task:
+#       jobs:
+#         - name: cargo test
+#           commands:
+#             - checkout
+#             - cargo build --verbose
+#             - cargo test --verbose
+#       agent:
+#         machine:
+#           type: e2-standard-4
+#           os_image: ubuntu2404
 version: v1.0
-name: Rust
-agent:
-  machine:
-    type: f1-standard-2
-    os_image: ubuntu2004
-  containers:
-    - name: main
-      image: 'registry.semaphoreci.com/rust:1.47'
+name: Elgate Rust CI
+
 blocks:
-  - name: Test
+  - name: Build & test
     task:
+      agent:
+        machine:
+          type: e2-standard-4          # 4-core, Ubuntu 24.04 VM
+          os_image: ubuntu2404
+      prologue:
+        commands:
+          # install io_uring headers once at VM level
+          - sudo apt-get update --quiet
+          - sudo apt-get install -y liburing-dev numactl
       jobs:
         - name: cargo test
+          container:
+            image: rust:1.78-slim       # any recent official Rust image
           commands:
             - checkout
             - cargo build --verbose
             - cargo test --verbose
-      agent:
-        machine:
-          type: e2-standard-4
-          os_image: ubuntu2404
