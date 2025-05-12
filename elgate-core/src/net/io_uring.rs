@@ -519,14 +519,7 @@ impl Drop for NetworkEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ring::{RingBuffer, RingBufferOptions};
-    use std::fs;
-    use std::net::{SocketAddr, TcpListener, TcpStream};
     use std::os::unix::io::AsRawFd;
-    use std::path::PathBuf;
-    use std::sync::Arc;
-    use std::thread;
-    use std::time::Duration;
 
     #[test]
     #[cfg(feature = "io_uring")]
@@ -542,7 +535,6 @@ mod tests {
         // Use tokio_uring::start for proper context
         tokio_uring::start(async {
             use std::io::{Read, Write};
-            use std::net::SocketAddr;
             use std::os::unix::io::FromRawFd;
 
             // Create a ring buffer for communication
@@ -750,7 +742,6 @@ mod tests {
 
         // Use tokio_uring::start for proper context
         tokio_uring::start(async {
-            use std::net::SocketAddr;
             use std::os::unix::io::{AsRawFd, FromRawFd};
             use tokio::sync::oneshot;
 

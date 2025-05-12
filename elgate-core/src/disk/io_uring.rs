@@ -240,7 +240,8 @@ impl DiskEngine {
 
                             // Perform the write operation
                             let buf = data.clone();
-                            match file.lock().unwrap().write_at(buf, offset).await {
+                            let file_guard = file.lock().unwrap();
+                            match file_guard.write_at(buf, offset).await {
                                 (Ok(_n), _) => {
                                     // Write to the ring buffer
                                     if let Err(err) =
@@ -432,8 +433,7 @@ impl Drop for DiskEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ring::{RingBuffer, RingBufferOptions};
-    use std::fs;
+    use crate::ring::RingBuffer;
     use std::path::PathBuf;
     use std::sync::Arc;
 
