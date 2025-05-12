@@ -22,5 +22,5 @@ blocks:
         - name: cargo test
           commands:
             - checkout
-            - cargo build --verbose --features io_uring
-            - cargo test --verbose --features io_uring
+            - cargo build --verbose
+            - cargo test --verbose
