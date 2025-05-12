@@ -240,7 +240,7 @@ impl DiskEngine {
 
                             // Perform the write operation
                             let buf = data.clone();
-                            match file.write_at(buf, offset).await {
+                            match file.lock().unwrap().write_at(buf, offset).await {
                                 (Ok(_n), _) => {
                                     // Write to the ring buffer
                                     if let Err(err) =
