@@ -115,7 +115,7 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     let server_addr = "127.0.0.1:8889".parse::<SocketAddr>().unwrap();
     println!("Creating TCP listener at {}", server_addr);
     let listener = TcpListener::bind(server_addr)?;
-    let listener_fd = listener.as_raw_fd();
+    let listener_fd = unsafe { std::os::unix::io::IntoRawFd::into_raw_fd(listener) };
 
     // Start a client in a separate thread
     println!("Starting client thread...");
