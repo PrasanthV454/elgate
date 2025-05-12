@@ -132,10 +132,11 @@ impl DiskEngine {
         let (res, buf) = file.read_at(buf, offset).await;
         let bytes_read = res.map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
 
-        // Notify via ring buffer
-        let _ = self
-            .ring_buffer
-            .push(OperationKind::ReadComplete, &path_buf);
+        // Notify via ring buffer - use the correct method and enum values from your implementation
+        let _ = self.ring_buffer.write(
+            OperationKind::DiskRead,
+            &path_buf.to_string_lossy().as_bytes(),
+        );
 
         Ok(buf[..bytes_read].to_vec())
     }
@@ -165,9 +166,10 @@ impl DiskEngine {
         res.map_err(|e| anyhow::anyhow!("Failed to write to file: {}", e))?;
 
         // Notify via ring buffer
-        let _ = self
-            .ring_buffer
-            .push(OperationKind::WriteComplete, &path_buf);
+        let _ = self.ring_buffer.write(
+            OperationKind::DiskWrite,
+            &path_buf.to_string_lossy().as_bytes(),
+        );
 
         Ok(())
     }
@@ -191,9 +193,10 @@ impl DiskEngine {
             .map_err(|e| anyhow::anyhow!("Failed to sync file: {}", e))?;
 
         // Notify via ring buffer
-        let _ = self
-            .ring_buffer
-            .push(OperationKind::SyncComplete, &path_buf);
+        let _ = self.ring_buffer.write(
+            OperationKind::Custom,
+            &path_buf.to_string_lossy().as_bytes(),
+        );
 
         Ok(())
     }
@@ -208,9 +211,10 @@ impl DiskEngine {
         files.remove(&path_buf);
 
         // Notify via ring buffer
-        let _ = self
-            .ring_buffer
-            .push(OperationKind::CloseComplete, &path_buf);
+        let _ = self.ring_buffer.write(
+            OperationKind::Custom,
+            &path_buf.to_string_lossy().as_bytes(),
+        );
 
         Ok(())
     }
