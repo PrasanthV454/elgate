@@ -6,8 +6,8 @@ authors = ["Prasanth Vemula <vpk11@iitbbs.ac.in>"]
 license = "MIT"
 
 [features]
-default = ["io_uring", "numa"]
-io_uring = ["tokio-uring"]
+default = ["io_uring"]
+io_uring = ["tokio-uring", "dep:libc"]
 numa = []
 
 [dependencies]
@@ -24,7 +24,7 @@ tracing-subscriber = { workspace = true }
 
 # New dependencies for shared memory ring buffer
 memmap2 = "0.5"         # For memory mapping
-libc = "0.2"            # For low-level system calls
+libc = { version = "0.2", optional = true }  # For low-level system calls
 nix = "0.26"            # For futex operations
 crossbeam-utils = "0.8" # For atomic operations
 dashmap = "5.4"         # For concurrent maps

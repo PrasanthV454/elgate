@@ -42,4 +42,4 @@ blocks:
                 echo "Running example: $example"
                 cargo run --example $example || echo "Failed to run example $example"
               done
-  
+              
