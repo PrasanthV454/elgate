@@ -3,6 +3,8 @@
 //! This example demonstrates how to use the disk I/O engine for
 //! high-performance file operations.
 
+mod common;
+use common::check_io_uring_full_support;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::fs;
@@ -10,7 +12,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Skip if io_uring not supported
+    if !check_io_uring_full_support() {
+        println!("Skipping io_uring example - not fully supported in this environment");
+        return Ok(());
+    }
+
     // Create a shared memory ring buffer
     let ring_path = "/tmp/elgate_example_disk_ring";
     let test_file_path = "/tmp/elgate_example_disk_file";
