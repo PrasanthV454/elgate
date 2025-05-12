@@ -6,9 +6,9 @@ authors = ["Prasanth Vemula <vpk11@iitbbs.ac.in>"]
 license = "MIT"
 
 [features]
-# Enable Linux-specific io_uring features
+default = ["io_uring", "numa"]
 io_uring = ["tokio-uring"]
-numa = []
+numa = ["numa-rs"]
 
 [dependencies]
 tokio = { workspace = true, features = ["full"] }

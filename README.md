@@ -77,11 +77,11 @@ Elgate is currently in early development. Check back soon for installation and u
 If you're on Linux, you can build directly:
 
 ```bash
-# Build with io_uring support
-cargo build --features io_uring
+# Build the project (io_uring and NUMA support are enabled by default)
+cargo build
 
 # Run tests
-cargo test --features io_uring
+cargo test
 ```
 
 #### Docker Development (for macOS/Windows)
@@ -96,18 +96,30 @@ docker-compose build
 docker-compose run --rm elgate-dev
 
 # Inside the container:
-cargo build --features io_uring
-cargo test --features io_uring
+cargo build
+cargo test
 ```
 
 For one-off commands:
 
 ```bash
 # Build the project
-docker-compose run --rm elgate-dev cargo build --features io_uring
+docker-compose run --rm elgate-dev cargo build
 
 # Run tests
-docker-compose run --rm elgate-dev cargo test --features io_uring
+docker-compose run --rm elgate-dev cargo test
+```
+
+#### Disabling Linux-specific Features
+
+If you need to build without Linux-specific features (for documentation or cross-platform code):
+
+```bash
+# Build without io_uring and NUMA support
+cargo build --no-default-features
+
+# Enable only specific features
+cargo build --no-default-features --features "numa"
 ```
 
 ### Project Structure
