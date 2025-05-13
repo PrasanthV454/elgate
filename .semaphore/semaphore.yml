@@ -42,5 +42,5 @@ blocks:
             #     echo "Running example: $example"
             #     cargo run --example $example || echo "Failed to run example $example"
             #   done
-            - cargo run --example network_io
+            - cargo run --example cross_platform_benchmark
 
