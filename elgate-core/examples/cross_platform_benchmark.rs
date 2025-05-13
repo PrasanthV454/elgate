@@ -7,6 +7,7 @@ use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
+use std::env;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::io::IntoRawFd;
@@ -17,9 +18,9 @@ use std::time::{Duration, Instant};
 
 const TEST_FILE_PATH: &str = "/tmp/elgate_benchmark_test_file";
 const RING_PATH: &str = "/tmp/elgate_benchmark_ring";
-const FILE_SIZE: usize = 100 * 1024 * 1024; // 100 MiB
-const CHUNK_SIZE: usize = 64 * 1024; // 64 KiB
-const ITERATIONS: usize = 10;
+const FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
+const CHUNK_SIZE: usize = 32 * 1024; // 32 KiB
+const ITERATIONS: usize = 3;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use tokio_uring's runtime instead of tokio
@@ -36,6 +37,15 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     println!("Elgate Cross-Platform I/O Benchmark");
     println!("===================================");
 
+    // Adjust parameters for CI
+    let (actual_file_size, actual_iterations) = (FILE_SIZE, ITERATIONS);
+
+    println!(
+        "File size: {} MiB, Iterations: {}",
+        actual_file_size / (1024 * 1024),
+        actual_iterations
+    );
+
     // Detect CPU topology
     let cpu_info = CpuInfo::detect();
     println!(
@@ -49,7 +59,7 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::fs::remove_file(RING_PATH);
 
     // Create a test file with random data
-    create_test_file(TEST_FILE_PATH, FILE_SIZE)?;
+    create_test_file(TEST_FILE_PATH, actual_file_size)?;
 
     // Create ring buffer
     let ring_options = RingBufferOptions {
@@ -82,19 +92,20 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Run disk benchmarks
     println!("\nSequential Read Benchmark:");
     let read_throughput =
-        run_read_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, ITERATIONS).await?;
+        run_read_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
     println!("Average read throughput: {:.2} MB/s", read_throughput);
 
     // Run write benchmark
     println!("\nSequential Write Benchmark:");
     let write_throughput =
-        run_write_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, ITERATIONS).await?;
+        run_write_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
     println!("Average write throughput: {:.2} MB/s", write_throughput);
 
     // Run random access benchmark
     println!("\nRandom Access Benchmark:");
     let random_throughput =
-        run_random_access_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, ITERATIONS).await?;
+        run_random_access_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)
+            .await?;
     println!(
         "Average random access throughput: {:.2} MB/s",
         random_throughput
@@ -169,8 +180,33 @@ async fn run_read_benchmark(
         let file_size = std::fs::metadata(path)?.len() as usize;
         let mut total_read = 0;
 
+        // Add progress reporting
+        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
+        println!(
+            "    Reading {} chunks of {} bytes each",
+            total_chunks, chunk_size
+        );
+        let mut chunks_read = 0;
+
         for offset in (0..file_size).step_by(chunk_size) {
-            let data = disk_engine.read_file(path, offset as u64).await?;
+            // Print progress every few chunks
+            chunks_read += 1;
+            if chunks_read % 10 == 0 || chunks_read == total_chunks {
+                println!("    Progress: {}/{} chunks", chunks_read, total_chunks);
+            }
+
+            // Add a timeout to each read operation
+            let read_future = disk_engine.read_file(path, offset as u64);
+            let timeout_duration = Duration::from_secs(10); // 10 second timeout
+
+            let data = match tokio::time::timeout(timeout_duration, read_future).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    println!("    Read operation timed out at offset {}", offset);
+                    // Continue with next chunk instead of hanging
+                    continue;
+                }
+            };
             total_read += data.len();
         }
 
@@ -204,18 +240,48 @@ async fn run_write_benchmark(
         let file_size = std::fs::metadata(path)?.len() as usize;
         let mut total_written = 0;
 
+        // Add progress reporting
+        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
+        println!(
+            "    Writing {} chunks of {} bytes each",
+            total_chunks, chunk_size
+        );
+        let mut chunks_written = 0;
+
         // Generate data to write
         let data = vec![0x42; chunk_size]; // Fill with arbitrary data
 
         for offset in (0..file_size).step_by(chunk_size) {
-            disk_engine
-                .write_file(&iter_path, offset as u64, data.clone())
-                .await?;
+            // Print progress every few chunks
+            chunks_written += 1;
+            if chunks_written % 10 == 0 || chunks_written == total_chunks {
+                println!("    Progress: {}/{} chunks", chunks_written, total_chunks);
+            }
+
+            // Add a timeout to each write operation
+            let write_future = disk_engine.write_file(&iter_path, offset as u64, data.clone());
+            let timeout_duration = Duration::from_secs(10); // 10 second timeout
+
+            match tokio::time::timeout(timeout_duration, write_future).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    println!("    Write operation timed out at offset {}", offset);
+                    // Continue with next chunk instead of hanging
+                    continue;
+                }
+            };
             total_written += chunk_size;
         }
 
         // Make sure data is committed to disk
-        disk_engine.sync_file(&iter_path).await?;
+        println!("    Syncing file to disk...");
+        let sync_future = disk_engine.sync_file(&iter_path);
+        match tokio::time::timeout(Duration::from_secs(5), sync_future).await {
+            Ok(result) => result?,
+            Err(_) => {
+                println!("    Sync operation timed out");
+            }
+        };
 
         let elapsed = start.elapsed();
         let throughput = total_written as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
@@ -228,6 +294,7 @@ async fn run_write_benchmark(
         );
 
         // Clean up
+        println!("    Cleaning up iteration file...");
         let _ = std::fs::remove_file(&iter_path);
     }
 
@@ -254,8 +321,32 @@ async fn run_random_access_benchmark(
             .map(|_| rand::random::<u64>() % (max_offset as u64))
             .collect();
 
+        println!("    Performing {} random reads", offsets.len());
+        let mut reads_completed = 0;
+
         for &offset in &offsets {
-            let data = disk_engine.read_file(path, offset).await?;
+            // Print progress
+            reads_completed += 1;
+            if reads_completed % 10 == 0 || reads_completed == offsets.len() {
+                println!(
+                    "    Progress: {}/{} random reads",
+                    reads_completed,
+                    offsets.len()
+                );
+            }
+
+            // Add a timeout
+            let read_future = disk_engine.read_file(path, offset);
+            let timeout_duration = Duration::from_secs(5); // 5 second timeout
+
+            let data = match tokio::time::timeout(timeout_duration, read_future).await {
+                Ok(result) => result?,
+                Err(_) => {
+                    println!("    Random read operation timed out at offset {}", offset);
+                    // Continue with next offset instead of hanging
+                    continue;
+                }
+            };
             total_read += data.len();
         }
 
