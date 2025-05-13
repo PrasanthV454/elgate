@@ -11,8 +11,10 @@ use std::env;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -62,6 +64,14 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Create a test file with random data
     create_test_file(TEST_FILE_PATH, actual_file_size)?;
 
+    // Try to drop caches for accurate benchmarking
+    println!("Attempting to drop filesystem caches...");
+    if try_drop_caches() {
+        println!("Successfully dropped caches");
+    } else {
+        println!("Could not drop caches (requires root). Results may be affected by caching");
+    }
+
     // Create ring buffer for io_uring benchmarks
     let ring_options = RingBufferOptions {
         path: PathBuf::from(RING_PATH),
@@ -85,12 +95,15 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run traditional disk benchmarks first
     let trad_read = run_traditional_read_benchmark(TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)?;
+    try_drop_caches();
 
     // Always create disk engine for io_uring benchmarks
     let disk_config = DiskConfig {
         #[cfg(feature = "io_uring")]
         queue_depth: 128,
         buffer_size: 128 * 1024, // 128 KiB
+        #[cfg(feature = "io_uring")]
+        flags: libc::O_DIRECT | libc::O_SYNC, // Use direct I/O for io_uring too
     };
 
     let disk_engine = DiskEngine::new(disk_config, ring.clone()).await?;
@@ -98,6 +111,7 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Run io_uring read benchmark
     let iouring_read =
         run_read_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
+    try_drop_caches();
 
     // Calculate and print speedup
     let speedup = if trad_read > 0.0 {
@@ -208,8 +222,39 @@ fn run_traditional_read_benchmark(
             file_size / 1024
         );
 
-        // Open file for reading
-        let mut file = File::open(path)?;
+        // Consistently use O_DIRECT for both implementations
+        #[cfg(target_os = "linux")]
+        let mut file = {
+            let opts = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECT | libc::O_SYNC);
+
+            match opts.open(path) {
+                Ok(f) => f,
+                Err(e) => {
+                    println!(
+                        "    Failed to open with O_DIRECT: {}. Falling back to standard API",
+                        e
+                    );
+                    std::fs::File::open(path)?
+                }
+            }
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let mut file = std::fs::File::open(path)?;
+
+        // Advise the kernel that we'll be reading the file sequentially
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                0,
+                0,
+                libc::POSIX_FADV_SEQUENTIAL | libc::POSIX_FADV_NOREUSE,
+            );
+        }
+
         let mut buffer = vec![0u8; chunk_size];
 
         // Try single read first
@@ -278,8 +323,29 @@ fn run_traditional_write_benchmark(
         // Generate data to write
         let data = vec![0x42; chunk_size]; // Fill with arbitrary data
 
-        // Create a new file for writing
-        let mut file = File::create(&iter_path)?;
+        // Create a new file for writing with O_DIRECT
+        #[cfg(target_os = "linux")]
+        let mut file = {
+            let opts = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .custom_flags(libc::O_DIRECT | libc::O_SYNC);
+
+            match opts.open(&iter_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    println!(
+                        "    Failed to open with O_DIRECT: {}. Falling back to standard API",
+                        e
+                    );
+                    std::fs::File::create(&iter_path)?
+                }
+            }
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let mut file = std::fs::File::create(&iter_path)?;
 
         for offset in (0..file_size).step_by(chunk_size) {
             file.seek(SeekFrom::Start(offset as u64))?;
@@ -340,8 +406,24 @@ fn run_traditional_random_benchmark(
 
         println!("    Performing {} random reads", offsets.len());
 
-        // Open file for reading
-        let mut file = File::open(path)?;
+        // Disable OS caching to make comparison fair
+        // First, open file with O_DIRECT if possible
+        #[cfg(target_os = "linux")]
+        let file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true)
+                .custom_flags(libc::O_DIRECT)
+                .open(path)
+                .unwrap_or_else(|_| {
+                    println!("    Note: O_DIRECT not supported, using standard file API");
+                    std::fs::File::open(path).unwrap()
+                })
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let file = std::fs::File::open(path)?;
+
         let mut buffer = vec![0u8; chunk_size];
 
         for &offset in &offsets {
@@ -697,30 +779,49 @@ async fn run_random_access_benchmark(
         println!("    Performing {} random reads", offsets.len());
         let mut reads_completed = 0;
 
+        // Try to batch read operations by opening file just once
+        println!("    Opening file for random access reads...");
+        let path_cstr = std::ffi::CString::new(path)?;
+
+        // Use a longer timeout for the entire batch
+        let timeout_duration = Duration::from_secs(30); // 30 second timeout
+
+        // Initialize a vector to store futures
+        let mut read_futures = Vec::with_capacity(offsets.len());
+
         for &offset in &offsets {
-            // Print progress
-            reads_completed += 1;
-            if reads_completed % 10 == 0 || reads_completed == offsets.len() {
+            // Queue up the read operation
+            read_futures.push(disk_engine.read_file(path, offset));
+        }
+
+        // Process all reads with a single timeout for the batch
+        println!("    Processing {} read operations...", read_futures.len());
+        match tokio::time::timeout(timeout_duration, futures::future::join_all(read_futures)).await
+        {
+            Ok(results) => {
+                for (i, result) in results.into_iter().enumerate() {
+                    match result {
+                        Ok(data) => total_read += data.len(),
+                        Err(e) => println!("    Error reading at offset {}: {}", offsets[i], e),
+                    }
+
+                    // Track progress
+                    reads_completed += 1;
+                    if reads_completed % 10 == 0 || reads_completed == offsets.len() {
+                        println!(
+                            "    Completed {}/{} random reads",
+                            reads_completed,
+                            offsets.len()
+                        );
+                    }
+                }
+            }
+            Err(_) => {
                 println!(
-                    "    Progress: {}/{} random reads",
-                    reads_completed,
-                    offsets.len()
+                    "    Batch read operation timed out after {} seconds",
+                    timeout_duration.as_secs()
                 );
             }
-
-            // Add a timeout
-            let read_future = disk_engine.read_file(path, offset);
-            let timeout_duration = Duration::from_secs(5); // 5 second timeout
-
-            let data = match tokio::time::timeout(timeout_duration, read_future).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    println!("    Random read operation timed out at offset {}", offset);
-                    // Continue with next offset instead of hanging
-                    continue;
-                }
-            };
-            total_read += data.len();
         }
 
         let elapsed = start.elapsed();
@@ -847,4 +948,26 @@ async fn run_network_throughput_benchmark(
     }
 
     Ok(throughputs.iter().sum::<f64>() / throughputs.len() as f64)
+}
+
+// Add a function to drop caches if possible
+fn try_drop_caches() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // Check if we can drop caches (requires root or proper permissions)
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg("echo 3 | sudo -n tee /proc/sys/vm/drop_caches > /dev/null 2>&1")
+            .output();
+
+        match output {
+            Ok(out) => out.status.success(),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
