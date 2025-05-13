@@ -1,14 +1,15 @@
 //! Cross-platform benchmark example
 //!
-//! This example compares performance between io_uring and fallback implementations,
-//! running the appropriate implementation based on platform support.
+//! This example compares performance between io_uring and traditional I/O implementations,
+//! running both implementations to provide performance comparisons.
 
 use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::env;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::io::IntoRawFd;
 use std::path::{Path, PathBuf};
@@ -61,7 +62,7 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Create a test file with random data
     create_test_file(TEST_FILE_PATH, actual_file_size)?;
 
-    // Create ring buffer
+    // Create ring buffer for io_uring benchmarks
     let ring_options = RingBufferOptions {
         path: PathBuf::from(RING_PATH),
         size: 4 * 1024 * 1024, // 4 MiB
@@ -73,14 +74,19 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print build configuration
     #[cfg(feature = "io_uring")]
-    println!("Using io_uring implementation");
+    println!("io_uring feature is enabled - will benchmark both implementations");
     #[cfg(not(feature = "io_uring"))]
-    println!("Using fallback implementation");
+    println!("io_uring feature is disabled - will only benchmark traditional I/O");
 
-    // Run disk benchmarks
-    println!("\n=== DISK I/O BENCHMARKS ===");
+    // Initialize results table
+    println!("\n=== BENCHMARK RESULTS ===");
+    println!("Operation          | Traditional I/O | io_uring     | Speedup");
+    println!("------------------ | --------------- | ------------ | -------");
 
-    // Create disk engine
+    // Run traditional disk benchmarks first
+    let trad_read = run_traditional_read_benchmark(TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)?;
+
+    // Always create disk engine for io_uring benchmarks
     let disk_config = DiskConfig {
         #[cfg(feature = "io_uring")]
         queue_depth: 128,
@@ -89,47 +95,76 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     let disk_engine = DiskEngine::new(disk_config, ring.clone()).await?;
 
-    // Run disk benchmarks
-    println!("\nSequential Read Benchmark:");
-    let read_throughput =
+    // Run io_uring read benchmark
+    let iouring_read =
         run_read_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
-    println!("Average read throughput: {:.2} MB/s", read_throughput);
 
-    // Run write benchmark
-    println!("\nSequential Write Benchmark:");
-    let write_throughput =
-        run_write_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
-    println!("Average write throughput: {:.2} MB/s", write_throughput);
-
-    // Run random access benchmark
-    println!("\nRandom Access Benchmark:");
-    let random_throughput =
-        run_random_access_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)
-            .await?;
+    // Calculate and print speedup
+    let speedup = if trad_read > 0.0 {
+        iouring_read / trad_read
+    } else {
+        0.0
+    };
     println!(
-        "Average random access throughput: {:.2} MB/s",
-        random_throughput
+        "Sequential Read    | {:.2} MB/s      | {:.2} MB/s   | {:.2}x",
+        trad_read, iouring_read, speedup
     );
 
-    // Allow time for cleanup
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Run traditional write benchmark
+    let trad_write =
+        run_traditional_write_benchmark(TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)?;
 
-    // Run network benchmarks
-    println!("\n=== NETWORK I/O BENCHMARKS ===");
+    // Run io_uring write benchmark
+    let iouring_write =
+        run_write_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations).await?;
 
-    // Create a new network engine
-    let net_config = NetworkConfig {
-        #[cfg(feature = "io_uring")]
-        queue_depth: 32,
-        buffer_size: 64 * 1024, // 64 KiB
+    // Calculate and print speedup
+    let speedup = if trad_write > 0.0 {
+        iouring_write / trad_write
+    } else {
+        0.0
     };
+    println!(
+        "Sequential Write   | {:.2} MB/s      | {:.2} MB/s   | {:.2}x",
+        trad_write, iouring_write, speedup
+    );
 
-    let net_engine = NetworkEngine::new(net_config, ring.clone()).await?;
+    // Run traditional random access benchmark
+    let trad_random =
+        run_traditional_random_benchmark(TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)?;
 
-    // Run network throughput benchmark
-    println!("\nNetwork Throughput Benchmark:");
-    let net_throughput = run_network_throughput_benchmark(&net_engine, 3).await?;
-    println!("Average network throughput: {:.2} MB/s", net_throughput);
+    // Run io_uring random access benchmark
+    let iouring_random =
+        run_random_access_benchmark(&disk_engine, TEST_FILE_PATH, CHUNK_SIZE, actual_iterations)
+            .await?;
+
+    // Calculate and print speedup
+    let speedup = if trad_random > 0.0 {
+        iouring_random / trad_random
+    } else {
+        0.0
+    };
+    println!(
+        "Random Access      | {:.2} MB/s      | {:.2} MB/s   | {:.2}x",
+        trad_random, iouring_random, speedup
+    );
+
+    // Run traditional network benchmark
+    let trad_network = run_traditional_network_benchmark(actual_iterations)?;
+
+    // Run io_uring network benchmark
+    let iouring_network = run_network_throughput_benchmark(&disk_engine, actual_iterations).await?;
+
+    // Calculate and print speedup
+    let speedup = if trad_network > 0.0 {
+        iouring_network / trad_network
+    } else {
+        0.0
+    };
+    println!(
+        "Network Throughput | {:.2} MB/s      | {:.2} MB/s   | {:.2}x",
+        trad_network, iouring_network, speedup
+    );
 
     // Clean up
     println!("\nCleaning up...");
@@ -138,6 +173,317 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Benchmark completed successfully!");
     Ok(())
+}
+
+// Implement traditional read benchmark
+fn run_traditional_read_benchmark(
+    path: &str,
+    chunk_size: usize,
+    iterations: usize,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut throughputs = Vec::new();
+
+    for i in 0..iterations {
+        println!("  Traditional Read: Iteration {}/{}", i + 1, iterations);
+        let start = Instant::now();
+        let file_size = std::fs::metadata(path)?.len() as usize;
+        let file_size = std::cmp::min(file_size, 1 * 1024 * 1024); // Limit to 1MB max
+        let mut total_read = 0;
+
+        // Add progress reporting
+        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
+        println!(
+            "    Reading {} chunks of {} bytes each ({}KB total)",
+            total_chunks,
+            chunk_size,
+            file_size / 1024
+        );
+
+        // Open file for reading
+        let mut file = File::open(path)?;
+        let mut buffer = vec![0u8; chunk_size];
+
+        // Try single read first
+        println!("    Attempting to read entire file at once...");
+        file.seek(SeekFrom::Start(0))?;
+        match file.read(&mut buffer) {
+            Ok(n) => {
+                total_read = n;
+                println!("    Successfully read {} bytes at once", n);
+            }
+            Err(e) => {
+                println!("    Full read failed: {}, falling back to chunked reads", e);
+
+                // Read in chunks
+                for offset in (0..file_size).step_by(chunk_size) {
+                    file.seek(SeekFrom::Start(offset as u64))?;
+                    match file.read(&mut buffer) {
+                        Ok(n) => total_read += n,
+                        Err(e) => {
+                            println!("    Read error at offset {}: {}", offset, e);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        let throughput = total_read as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+        throughputs.push(throughput);
+        println!(
+            "    Read {} KiB in {:.2?} ({:.2} MB/s)",
+            total_read / 1024,
+            elapsed,
+            throughput
+        );
+    }
+
+    Ok(throughputs.iter().sum::<f64>() / throughputs.len() as f64)
+}
+
+// Implement traditional write benchmark
+fn run_traditional_write_benchmark(
+    path: &str,
+    chunk_size: usize,
+    iterations: usize,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut throughputs = Vec::new();
+
+    for i in 0..iterations {
+        println!("  Traditional Write: Iteration {}/{}", i + 1, iterations);
+
+        // Create a new path for each iteration to avoid caching effects
+        let iter_path = format!("{}.trad.{}", path, i);
+        let start = Instant::now();
+        let file_size = std::fs::metadata(path)?.len() as usize;
+        let mut total_written = 0;
+
+        // Add progress reporting
+        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
+        println!(
+            "    Writing {} chunks of {} bytes each",
+            total_chunks, chunk_size
+        );
+
+        // Generate data to write
+        let data = vec![0x42; chunk_size]; // Fill with arbitrary data
+
+        // Create a new file for writing
+        let mut file = File::create(&iter_path)?;
+
+        for offset in (0..file_size).step_by(chunk_size) {
+            file.seek(SeekFrom::Start(offset as u64))?;
+            match file.write(&data) {
+                Ok(n) => total_written += n,
+                Err(e) => {
+                    println!("    Write error at offset {}: {}", offset, e);
+                    continue;
+                }
+            }
+        }
+
+        // Make sure data is committed to disk
+        println!("    Syncing file to disk...");
+        file.sync_all()?;
+
+        let elapsed = start.elapsed();
+        let throughput = total_written as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+        throughputs.push(throughput);
+        println!(
+            "    Wrote {} KiB in {:.2?} ({:.2} MB/s)",
+            total_written / 1024,
+            elapsed,
+            throughput
+        );
+
+        // Clean up
+        println!("    Cleaning up iteration file...");
+        let _ = std::fs::remove_file(&iter_path);
+    }
+
+    Ok(throughputs.iter().sum::<f64>() / throughputs.len() as f64)
+}
+
+// Implement traditional random access benchmark
+fn run_traditional_random_benchmark(
+    path: &str,
+    chunk_size: usize,
+    iterations: usize,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut throughputs = Vec::new();
+
+    for i in 0..iterations {
+        println!(
+            "  Traditional Random Access: Iteration {}/{}",
+            i + 1,
+            iterations
+        );
+        let start = Instant::now();
+        let file_size = std::fs::metadata(path)?.len() as usize;
+        let mut total_read = 0;
+
+        // Generate random offsets
+        let max_offset = file_size.saturating_sub(chunk_size);
+        let offsets: Vec<u64> = (0..100)
+            .map(|_| rand::random::<u64>() % (max_offset as u64))
+            .collect();
+
+        println!("    Performing {} random reads", offsets.len());
+
+        // Open file for reading
+        let mut file = File::open(path)?;
+        let mut buffer = vec![0u8; chunk_size];
+
+        for &offset in &offsets {
+            file.seek(SeekFrom::Start(offset))?;
+            match file.read(&mut buffer) {
+                Ok(n) => total_read += n,
+                Err(e) => {
+                    println!("    Read error at offset {}: {}", offset, e);
+                    continue;
+                }
+            }
+        }
+
+        let elapsed = start.elapsed();
+        let operations_per_second = offsets.len() as f64 / elapsed.as_secs_f64();
+        let throughput = total_read as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+        throughputs.push(throughput);
+        println!(
+            "    Performed {} random reads in {:.2?} ({:.2} ops/s, {:.2} MB/s)",
+            offsets.len(),
+            elapsed,
+            operations_per_second,
+            throughput
+        );
+    }
+
+    Ok(throughputs.iter().sum::<f64>() / throughputs.len() as f64)
+}
+
+// Implement traditional network benchmark
+fn run_traditional_network_benchmark(iterations: usize) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut throughputs = Vec::new();
+    let data_size = 5 * 1024 * 1024; // 5 MiB
+    let chunk_size = 64 * 1024; // 64 KiB
+
+    for i in 0..iterations {
+        println!("  Traditional Network: Iteration {}/{}", i + 1, iterations);
+
+        // Set up channels for coordination
+        let (server_ready_tx, server_ready_rx) = mpsc::channel();
+
+        // Start echo server in a separate thread
+        let server_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+        let listener = TcpListener::bind(server_addr)?;
+        let actual_server_addr = listener.local_addr()?;
+        println!("  Starting echo server at {}", actual_server_addr);
+
+        let server_thread = thread::spawn(move || {
+            println!("  Server listening...");
+
+            // Signal that we're ready
+            server_ready_tx.send(()).unwrap();
+
+            if let Ok((mut stream, client_addr)) = listener.accept() {
+                println!("  Server accepted connection from {}", client_addr);
+
+                // Echo back data in chunks
+                let mut buffer = vec![0u8; chunk_size];
+                let mut total_echoed = 0;
+
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => break, // End of stream
+                        Ok(n) => {
+                            if let Err(e) = stream.write_all(&buffer[0..n]) {
+                                eprintln!("  Server write error: {}", e);
+                                break;
+                            }
+                            total_echoed += n;
+                        }
+                        Err(e) => {
+                            eprintln!("  Server read error: {}", e);
+                            break;
+                        }
+                    }
+                }
+
+                println!("  Server echoed {} bytes total", total_echoed);
+            } else {
+                eprintln!("  Server accept error");
+            }
+        });
+
+        // Wait for server to be ready
+        server_ready_rx.recv().unwrap();
+
+        // Connect to the echo server
+        let start = Instant::now();
+        let mut client = TcpStream::connect(actual_server_addr)?;
+        println!("  Connected to echo server");
+
+        // Set non-blocking mode (optional)
+        client.set_nonblocking(false)?;
+
+        // Create test data
+        let chunk = vec![0x42u8; chunk_size]; // Fill with arbitrary data
+        let chunks_to_send = data_size / chunk_size;
+
+        // Send data in chunks
+        let mut total_sent = 0;
+        let mut total_received = 0;
+        let mut buffer = vec![0u8; chunk_size];
+
+        for chunk_idx in 0..chunks_to_send {
+            // Send chunk
+            match client.write_all(&chunk) {
+                Ok(_) => {
+                    total_sent += chunk.len();
+                }
+                Err(e) => {
+                    println!("    Write error: {}", e);
+                    break;
+                }
+            }
+
+            // Read response
+            match client.read(&mut buffer) {
+                Ok(n) if n > 0 => {
+                    total_received += n;
+                }
+                Ok(_) => break,
+                Err(e) => {
+                    println!("    Read error: {}", e);
+                    break;
+                }
+            }
+        }
+
+        // Calculate throughput
+        let elapsed = start.elapsed();
+        let throughput =
+            (total_sent + total_received) as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+        throughputs.push(throughput);
+
+        println!(
+            "    Transferred {} MiB in {:.2?} ({:.2} MB/s bidirectional)",
+            (total_sent + total_received) / (1024 * 1024),
+            elapsed,
+            throughput
+        );
+
+        // Wait for server to complete
+        if let Err(e) = server_thread.join() {
+            eprintln!("  Server thread join error: {:?}", e);
+        }
+
+        // Short delay between iterations
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    Ok(throughputs.iter().sum::<f64>() / throughputs.len() as f64)
 }
 
 fn create_test_file(path: &str, size: usize) -> std::io::Result<()> {
