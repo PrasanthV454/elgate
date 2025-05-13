@@ -58,7 +58,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // Write data to a file
+        // Create or open the file first using standard Rust file operations
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(test_file_path)?;
+
+        // Now use the DiskEngine to write to it
         let content = "Hello, Elgate disk I/O engine!";
         println!("Writing to file: {}", test_file_path);
         if let Err(e) = disk_engine

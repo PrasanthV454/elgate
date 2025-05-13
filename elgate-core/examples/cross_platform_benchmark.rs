@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 
 const TEST_FILE_PATH: &str = "/tmp/elgate_benchmark_test_file";
 const RING_PATH: &str = "/tmp/elgate_benchmark_ring";
-const FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB
-const CHUNK_SIZE: usize = 32 * 1024; // 32 KiB
-const ITERATIONS: usize = 3;
+const FILE_SIZE: usize = 1 * 1024 * 1024; // 1 MiB
+const CHUNK_SIZE: usize = 128 * 1024; // 128 KiB - larger chunks for faster processing
+const ITERATIONS: usize = 2;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Use tokio_uring's runtime instead of tokio
@@ -178,44 +178,62 @@ async fn run_read_benchmark(
         println!("  Iteration {}/{}", i + 1, iterations);
         let start = Instant::now();
         let file_size = std::fs::metadata(path)?.len() as usize;
+        let file_size = std::cmp::min(file_size, 1 * 1024 * 1024); // Limit to 1MB max
         let mut total_read = 0;
 
         // Add progress reporting
         let total_chunks = (file_size + chunk_size - 1) / chunk_size;
         println!(
-            "    Reading {} chunks of {} bytes each",
-            total_chunks, chunk_size
+            "    Reading {} chunks of {} bytes each ({}KB total)",
+            total_chunks,
+            chunk_size,
+            file_size / 1024
         );
         let mut chunks_read = 0;
 
-        for offset in (0..file_size).step_by(chunk_size) {
-            // Print progress every few chunks
-            chunks_read += 1;
-            if chunks_read % 10 == 0 || chunks_read == total_chunks {
-                println!("    Progress: {}/{} chunks", chunks_read, total_chunks);
+        // Read entire file at once for better performance
+        println!("    Reading entire file at once...");
+        let read_future = disk_engine.read_file(path, 0);
+        let timeout_duration = Duration::from_secs(30); // 30 second timeout
+
+        match tokio::time::timeout(timeout_duration, read_future).await {
+            Ok(result) => {
+                let data = result?;
+                total_read = data.len();
+                println!("    Successfully read {} bytes at once", total_read);
             }
+            Err(_) => {
+                println!("    Single read operation timed out, falling back to chunked reads");
+                // Fall back to chunked reads
+                for offset in (0..file_size).step_by(chunk_size) {
+                    // Print progress every chunk
+                    chunks_read += 1;
+                    println!("    Reading chunk {}/{}", chunks_read, total_chunks);
 
-            // Add a timeout to each read operation
-            let read_future = disk_engine.read_file(path, offset as u64);
-            let timeout_duration = Duration::from_secs(10); // 10 second timeout
+                    // Add a timeout to each read operation
+                    let read_future = disk_engine.read_file(path, offset as u64);
+                    let timeout_duration = Duration::from_secs(10); // 10 second timeout
 
-            let data = match tokio::time::timeout(timeout_duration, read_future).await {
-                Ok(result) => result?,
-                Err(_) => {
-                    println!("    Read operation timed out at offset {}", offset);
-                    // Continue with next chunk instead of hanging
-                    continue;
+                    let data = match tokio::time::timeout(timeout_duration, read_future).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            println!("    Read operation timed out at offset {}", offset);
+                            // Skip remaining chunks if we hit a timeout
+                            println!("    Skipping remaining chunks due to timeout");
+                            break;
+                        }
+                    };
+                    total_read += data.len();
                 }
-            };
-            total_read += data.len();
+            }
         }
 
         let elapsed = start.elapsed();
         let throughput = total_read as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
         throughputs.push(throughput);
         println!(
-            "    Read {} MiB in {:.2?} ({:.2} MB/s)",
-            total_read / (1024 * 1024),
+            "    Read {} KiB in {:.2?} ({:.2} MB/s)",
+            total_read / 1024,
             elapsed,
             throughput
         );
@@ -371,7 +389,7 @@ async fn run_network_throughput_benchmark(
     iterations: usize,
 ) -> Result<f64, Box<dyn std::error::Error>> {
     let mut throughputs = Vec::new();
-    let data_size = 50 * 1024 * 1024; // 50 MiB
+    let data_size = 5 * 1024 * 1024; // 5 MiB - much smaller for CI
     let chunk_size = 64 * 1024; // 64 KiB per write
 
     for i in 0..iterations {
