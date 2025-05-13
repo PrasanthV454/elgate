@@ -7,12 +7,11 @@ use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
-use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Arc};
@@ -102,8 +101,6 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "io_uring")]
         queue_depth: 128,
         buffer_size: 128 * 1024, // 128 KiB
-        #[cfg(feature = "io_uring")]
-        flags: libc::O_DIRECT | libc::O_SYNC, // Use direct I/O for io_uring too
     };
 
     let disk_engine = DiskEngine::new(disk_config, ring.clone()).await?;
@@ -326,8 +323,8 @@ fn run_traditional_write_benchmark(
         // Create a new file for writing with O_DIRECT
         #[cfg(target_os = "linux")]
         let mut file = {
-            let opts = std::fs::OpenOptions::new()
-                .create(true)
+            let mut opts = std::fs::OpenOptions::new();
+            opts.create(true)
                 .write(true)
                 .truncate(true)
                 .custom_flags(libc::O_DIRECT | libc::O_SYNC);
@@ -409,7 +406,7 @@ fn run_traditional_random_benchmark(
         // Disable OS caching to make comparison fair
         // First, open file with O_DIRECT if possible
         #[cfg(target_os = "linux")]
-        let file = {
+        let mut file = {
             use std::os::unix::fs::OpenOptionsExt;
             let mut opts = std::fs::OpenOptions::new();
             opts.read(true)
@@ -422,7 +419,7 @@ fn run_traditional_random_benchmark(
         };
 
         #[cfg(not(target_os = "linux"))]
-        let file = std::fs::File::open(path)?;
+        let mut file = std::fs::File::open(path)?;
 
         let mut buffer = vec![0u8; chunk_size];
 
@@ -781,7 +778,7 @@ async fn run_random_access_benchmark(
 
         // Try to batch read operations by opening file just once
         println!("    Opening file for random access reads...");
-        let path_cstr = std::ffi::CString::new(path)?;
+        // We'll use the path directly in the disk_engine.read_file calls
 
         // Use a longer timeout for the entire batch
         let timeout_duration = Duration::from_secs(30); // 30 second timeout
