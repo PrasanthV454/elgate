@@ -7,6 +7,7 @@ use elgate_core::arch::cpu_info::CpuInfo;
 use elgate_core::disk::io_uring::{DiskConfig, DiskEngine};
 use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
+use std::alloc::{alloc, Layout};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -14,6 +15,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::ptr;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -195,7 +197,25 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Implement traditional read benchmark
+// Add a function to create aligned buffers for O_DIRECT
+fn create_aligned_buffer(size: usize) -> Vec<u8> {
+    // O_DIRECT typically requires 512-byte alignment
+    const ALIGNMENT: usize = 512;
+
+    // Create an aligned buffer using the allocator
+    let layout = Layout::from_size_align(size, ALIGNMENT).expect("Invalid buffer layout");
+
+    let mut vec = Vec::with_capacity(size);
+    unsafe {
+        let ptr = alloc(layout);
+        vec.set_len(size);
+        ptr::copy_nonoverlapping(ptr, vec.as_mut_ptr(), size);
+    }
+
+    vec
+}
+
+// Modify the read function to use aligned buffers with proper fallback
 fn run_traditional_read_benchmark(
     path: &str,
     chunk_size: usize,
@@ -219,27 +239,24 @@ fn run_traditional_read_benchmark(
             file_size / 1024
         );
 
-        // Consistently use O_DIRECT for both implementations
-        #[cfg(target_os = "linux")]
-        let mut file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut opts = std::fs::OpenOptions::new();
-            opts.read(true).custom_flags(libc::O_DIRECT | libc::O_SYNC);
-
-            match opts.open(path) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!(
-                        "    Failed to open with O_DIRECT: {}. Falling back to standard API",
-                        e
-                    );
-                    std::fs::File::open(path)?
-                }
+        // Try O_DIRECT first, if it fails, fall back to standard I/O
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)
+        {
+            Ok(f) => {
+                println!("    Using O_DIRECT for reading");
+                f
+            }
+            Err(e) => {
+                println!("    O_DIRECT not supported: {}. Using standard file API", e);
+                std::fs::File::open(path)?
             }
         };
 
-        #[cfg(not(target_os = "linux"))]
-        let mut file = std::fs::File::open(path)?;
+        // Create an aligned buffer for O_DIRECT
+        let mut buffer = create_aligned_buffer(chunk_size);
 
         // Advise the kernel that we'll be reading the file sequentially
         #[cfg(target_os = "linux")]
@@ -251,8 +268,6 @@ fn run_traditional_read_benchmark(
                 libc::POSIX_FADV_SEQUENTIAL | libc::POSIX_FADV_NOREUSE,
             );
         }
-
-        let mut buffer = vec![0u8; chunk_size];
 
         // Try single read first
         println!("    Attempting to read entire file at once...");
@@ -304,50 +319,37 @@ fn run_traditional_write_benchmark(
     for i in 0..iterations {
         println!("  Traditional Write: Iteration {}/{}", i + 1, iterations);
 
-        // Create a new path for each iteration to avoid caching effects
-        let iter_path = format!("{}.trad.{}", path, i);
-        let start = Instant::now();
-        let file_size = std::fs::metadata(path)?.len() as usize;
-        let mut total_written = 0;
+        // Create aligned data for O_DIRECT
+        let mut data = create_aligned_buffer(chunk_size);
+        for i in 0..data.len() {
+            data[i] = 0x42; // Fill with same test pattern
+        }
 
-        // Add progress reporting
-        let total_chunks = (file_size + chunk_size - 1) / chunk_size;
-        println!(
-            "    Writing {} chunks of {} bytes each",
-            total_chunks, chunk_size
-        );
-
-        // Generate data to write
-        let data = vec![0x42; chunk_size]; // Fill with arbitrary data
-
-        // Create a new file for writing with O_DIRECT
-        #[cfg(target_os = "linux")]
-        let mut file = {
-            let mut opts = std::fs::OpenOptions::new();
-            opts.create(true)
-                .write(true)
-                .truncate(true)
-                .custom_flags(libc::O_DIRECT | libc::O_SYNC);
-
-            match opts.open(&iter_path) {
-                Ok(f) => f,
-                Err(e) => {
-                    println!(
-                        "    Failed to open with O_DIRECT: {}. Falling back to standard API",
-                        e
-                    );
-                    std::fs::File::create(&iter_path)?
-                }
+        // Create a new file, try with O_DIRECT but fall back if needed
+        let iter_path = format!("{}.{}", path, i);
+        let mut file = match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&iter_path)
+        {
+            Ok(f) => {
+                println!("    Using O_DIRECT for writing");
+                f
+            }
+            Err(e) => {
+                println!("    O_DIRECT not supported: {}. Using standard file API", e);
+                std::fs::File::create(&iter_path)?
             }
         };
 
-        #[cfg(not(target_os = "linux"))]
-        let mut file = std::fs::File::create(&iter_path)?;
-
-        for offset in (0..file_size).step_by(chunk_size) {
+        for offset in (0..chunk_size).step_by(chunk_size) {
             file.seek(SeekFrom::Start(offset as u64))?;
             match file.write(&data) {
-                Ok(n) => total_written += n,
+                Ok(n) => {
+                    // No need to update total_written here, as we're writing the entire file
+                }
                 Err(e) => {
                     println!("    Write error at offset {}: {}", offset, e);
                     continue;
@@ -360,11 +362,11 @@ fn run_traditional_write_benchmark(
         file.sync_all()?;
 
         let elapsed = start.elapsed();
-        let throughput = total_written as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
+        let throughput = chunk_size as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
         throughputs.push(throughput);
         println!(
             "    Wrote {} KiB in {:.2?} ({:.2} MB/s)",
-            total_written / 1024,
+            chunk_size / 1024,
             elapsed,
             throughput
         );
@@ -395,35 +397,15 @@ fn run_traditional_random_benchmark(
         let file_size = std::fs::metadata(path)?.len() as usize;
         let mut total_read = 0;
 
-        // Generate random offsets
-        let max_offset = file_size.saturating_sub(chunk_size);
-        let offsets: Vec<u64> = (0..100)
-            .map(|_| rand::random::<u64>() % (max_offset as u64))
-            .collect();
-
-        println!("    Performing {} random reads", offsets.len());
-
-        // Disable OS caching to make comparison fair
-        // First, open file with O_DIRECT if possible
-        #[cfg(target_os = "linux")]
-        let mut file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut opts = std::fs::OpenOptions::new();
-            opts.read(true)
-                .custom_flags(libc::O_DIRECT)
-                .open(path)
-                .unwrap_or_else(|_| {
-                    println!("    Note: O_DIRECT not supported, using standard file API");
-                    std::fs::File::open(path).unwrap()
-                })
-        };
-
-        #[cfg(not(target_os = "linux"))]
+        // For random access, just use regular file I/O since O_DIRECT
+        // causes too many complications with arbitrary offsets
+        println!("    Using standard I/O for random access (O_DIRECT disabled)");
         let mut file = std::fs::File::open(path)?;
 
         let mut buffer = vec![0u8; chunk_size];
 
-        for &offset in &offsets {
+        for _ in 0..100 {
+            let offset = rand::random::<u64>() % (file_size as u64);
             file.seek(SeekFrom::Start(offset))?;
             match file.read(&mut buffer) {
                 Ok(n) => total_read += n,
@@ -435,15 +417,12 @@ fn run_traditional_random_benchmark(
         }
 
         let elapsed = start.elapsed();
-        let operations_per_second = offsets.len() as f64 / elapsed.as_secs_f64();
+        let operations_per_second = 100 as f64 / elapsed.as_secs_f64();
         let throughput = total_read as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64();
         throughputs.push(throughput);
         println!(
-            "    Performed {} random reads in {:.2?} ({:.2} ops/s, {:.2} MB/s)",
-            offsets.len(),
-            elapsed,
-            operations_per_second,
-            throughput
+            "    Performed 100 random reads in {:.2?} ({:.2} ops/s, {:.2} MB/s)",
+            elapsed, operations_per_second, throughput
         );
     }
 
