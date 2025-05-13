@@ -152,8 +152,17 @@ async fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Run traditional network benchmark
     let trad_network = run_traditional_network_benchmark(actual_iterations)?;
 
+    // Create a network engine for io_uring network benchmark
+    let net_config = NetworkConfig {
+        #[cfg(feature = "io_uring")]
+        queue_depth: 32,
+        buffer_size: 64 * 1024, // 64 KiB
+    };
+
+    let net_engine = NetworkEngine::new(net_config, ring.clone()).await?;
+
     // Run io_uring network benchmark
-    let iouring_network = run_network_throughput_benchmark(&disk_engine, actual_iterations).await?;
+    let iouring_network = run_network_throughput_benchmark(&net_engine, actual_iterations).await?;
 
     // Calculate and print speedup
     let speedup = if trad_network > 0.0 {
@@ -436,7 +445,7 @@ fn run_traditional_network_benchmark(iterations: usize) -> Result<f64, Box<dyn s
         let mut total_received = 0;
         let mut buffer = vec![0u8; chunk_size];
 
-        for chunk_idx in 0..chunks_to_send {
+        for _ in 0..chunks_to_send {
             // Send chunk
             match client.write_all(&chunk) {
                 Ok(_) => {
