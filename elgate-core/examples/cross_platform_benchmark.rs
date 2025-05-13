@@ -393,9 +393,11 @@ fn run_traditional_random_benchmark(
             i + 1,
             iterations
         );
-        let start = Instant::now();
         let file_size = std::fs::metadata(path)?.len() as usize;
         let mut total_read = 0;
+
+        // Start the timer for benchmarking
+        let start = Instant::now();
 
         // For random access, just use regular file I/O since O_DIRECT
         // causes too many complications with arbitrary offsets
@@ -411,7 +413,6 @@ fn run_traditional_random_benchmark(
                 Ok(n) => total_read += n,
                 Err(e) => {
                     println!("    Read error at offset {}: {}", offset, e);
-                    continue;
                 }
             }
         }
