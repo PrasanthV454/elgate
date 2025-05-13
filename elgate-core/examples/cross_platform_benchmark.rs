@@ -222,9 +222,9 @@ fn run_traditional_read_benchmark(
         // Consistently use O_DIRECT for both implementations
         #[cfg(target_os = "linux")]
         let mut file = {
-            let opts = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECT | libc::O_SYNC);
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true).custom_flags(libc::O_DIRECT | libc::O_SYNC);
 
             match opts.open(path) {
                 Ok(f) => f,
