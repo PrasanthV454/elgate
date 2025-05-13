@@ -7,7 +7,7 @@ use elgate_core::net::io_uring::{NetworkConfig, NetworkEngine};
 use elgate_core::ring::{RingBuffer, RingBufferOptions};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::os::unix::io::IntoRawFd;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
@@ -50,7 +50,7 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("Initializing network I/O engine...");
-    let net_engine = NetworkEngine::new(config, ring.clone()).await?;
+    let net_engine = NetworkEngine::new(config.clone(), ring.clone()).await?;
 
     // Run client example first
     println!("\n--- Running client example ---");
@@ -158,6 +158,8 @@ async fn run_client_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
 async fn run_server_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn std::error::Error>> {
     // Set up a channel for client notification
     let (server_ready_tx, server_ready_rx) = mpsc::channel();
+    // Set up a separate channel for the file descriptor
+    let (fd_tx, fd_rx) = mpsc::channel();
 
     // Create a TCP listener
     let server_addr = "127.0.0.1:40000".parse::<SocketAddr>().unwrap();
@@ -178,7 +180,7 @@ async fn run_server_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
                         println!("Engine is ready, transferring listener fd");
                         // Transfer the listener to the engine
                         let listener_fd = unsafe { IntoRawFd::into_raw_fd(listener) };
-                        let _ = server_ready_tx.send(listener_fd);
+                        let _ = fd_tx.send(listener_fd);
                     }
                 }
             }
@@ -188,15 +190,60 @@ async fn run_server_example(net_engine: &NetworkEngine) -> Result<(), Box<dyn st
         }
     });
 
-    // Get the address from the server thread
-    let listener_addr = match server_ready_rx.recv() {
-        Ok(addr) => addr,
+    // First wait for the notification that the server is listening
+    if let Err(e) = server_ready_rx.recv() {
+        return Err(format!("Server notification failed: {}", e).into());
+    }
+
+    // Signal that the engine is ready to accept
+    println!("Engine ready to accept connections");
+    server_ready_tx.send(()).unwrap();
+
+    // Now receive the file descriptor
+    let listener_fd = match fd_rx.recv() {
+        Ok(fd) => fd,
         Err(e) => return Err(format!("Failed to get listener address: {}", e).into()),
     };
 
+    // Start a client thread to connect to our server
+    println!("Starting client thread...");
+    let client_thread = thread::spawn(move || {
+        // Small delay to ensure server is accepting
+        thread::sleep(Duration::from_millis(100));
+
+        println!("Client connecting to server...");
+        match std::net::TcpStream::connect(server_addr) {
+            Ok(mut stream) => {
+                println!("Client connected");
+
+                // Send a message
+                let message = "Hello from client!";
+                println!("Client sending: {}", message);
+                if let Err(e) = stream.write_all(message.as_bytes()) {
+                    eprintln!("Client write error: {}", e);
+                    return;
+                }
+
+                // Read response
+                let mut buffer = [0u8; 1024];
+                match stream.read(&mut buffer) {
+                    Ok(n) if n > 0 => {
+                        println!(
+                            "Client received: {}",
+                            String::from_utf8_lossy(&buffer[0..n])
+                        );
+                    }
+                    Ok(_) => println!("Server closed connection"),
+                    Err(e) => eprintln!("Client read error: {}", e),
+                }
+            }
+            Err(e) => eprintln!("Client connect error: {}", e),
+        }
+    });
+
     // Accept connection using the engine
     println!("Server accepting connections...");
-    let (client_fd, addr) = match net_engine.accept(listener_addr).await {
+    let (client_fd, addr) = match net_engine.accept(listener_fd).await {
         Ok(result) => result,
         Err(e) => {
             // Make sure client thread exits if we fail
