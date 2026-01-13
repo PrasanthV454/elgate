@@ -1,5 +1,7 @@
 # 🚀 Elgate
 
+I can't answer many questions I vibe coded completely and this doesn't really work in my localsetup too.
+
 **Elgate** is a high-performance, architecture-aware sidecar service written in Rust that offloads all disk and network I/O from applications to a dedicated async engine using:
 
 - 🧠 Shared memory ring buffers (RAM-based IPC)
